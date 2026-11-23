@@ -55,9 +55,11 @@ Interactive docs: `http://localhost:8000/docs`.
 - **NWS** (`api.weather.gov`): points → gridpoint forecast. Cached 30 min
   (grid mapping 7 d).
 - **Open-Meteo**: 48 h hourly temp/wind/gusts/precip-prob. Cached 30 min.
-- **USGS** (reservoir levels; New Bullards Bar = gage **11413515**):
-  layered fetch — instantaneous (`/nwis/iv/`) → daily (`/nwis/dv/`) → legacy
-  updated-values (`waterdata.usgs.gov/nwis/uv`). Cached 15 min.
+- **USGS** (reservoir/river levels; e.g. New Bullards Bar = gages **11413515**
+  stage + **11413520** outflow): OGC API (`api.waterdata.usgs.gov/ogcapi/v1`)
+  per station — `latest-continuous` first, falling back to `latest-daily` for
+  stations that only publish daily (NBB's pair, verified 2026-11-23).
+  Dormant stations are labeled, not silently dropped. Cached 15 min.
 - Every source degrades gracefully: on fetch failure the last cached payload
   is served with `stale: true` and its `fetched_at` timestamp; with no cache
   at all the panel shows an explicit error instead of crashing.

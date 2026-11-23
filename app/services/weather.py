@@ -635,15 +635,6 @@ async def usgs_gauges(water: dict, client: httpx.AsyncClient | None = None) -> d
     return {"gauges": list(results), "fetched_at": now_iso()}
 
 
-# Backwards-compatible single-gauge accessor (primary/stage gauge of a water).
-async def usgs_level(water: dict) -> dict:
-    bundle = await usgs_gauges(water)
-    for g in bundle.get("gauges", []):
-        if g.get("role") in ("primary", "stage"):
-            return g
-    return bundle.get("gauges", [{}])[0] if bundle.get("gauges") else {"status": "no_data"}
-
-
 # ---------------------------------------------------------------------------
 # Bundle for the weather panel.
 # ---------------------------------------------------------------------------

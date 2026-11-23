@@ -125,35 +125,41 @@ $("#trip-list").addEventListener("click", async (e) => {
       await renderCatches(body.trip_id);
     } catch (err) { alert("Failed: " + err.message); }
   } else if (t.dataset.delcatch) {
-    const id = t.dataset.delcatch;
-    const tripId = t.closest(".trip").dataset.trip;
-    await api(`/api/catches/${id}`, { method: "DELETE" });
-    await renderCatches(tripId);
+    try {
+      const id = t.dataset.delcatch;
+      const tripId = t.closest(".trip").dataset.trip;
+      await api(`/api/catches/${id}`, { method: "DELETE" });
+      await renderCatches(tripId);
+    } catch (err) { alert("Failed: " + err.message); }
   } else if (t.dataset.deltrip) {
     if (confirm("Delete this trip and all its catches?")) {
-      await api(`/api/trips/${t.dataset.deltrip}`, { method: "DELETE" });
-      await loadTrips();
+      try {
+        await api(`/api/trips/${t.dataset.deltrip}`, { method: "DELETE" });
+        await loadTrips();
+      } catch (err) { alert("Failed: " + err.message); }
     }
   } else if (t.dataset.edittrip) {
-    const trip = (await api(`/api/trips/${t.dataset.edittrip}`));
-    const water = WATERS.find((w) => String(w.id) === String(trip.water_id));
-    const user = USERS.find((u) => String(u.id) === String(trip.user_id));
-    const name = prompt("Water name:", water?.name || "");
-    if (name === null) return;
-    const date = prompt("Date (YYYY-MM-DD):", trip.date);
-    if (date === null) return;
-    const species = prompt("Target species:", trip.target_species || "");
-    const notes = prompt("Notes:", trip.notes || "");
-    const status = prompt("Status (planned/completed/cancelled):", trip.status);
-    await api(`/api/trips/${trip.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        water_id: WATERS.find((w) => w.name === name)?.id,
-        date, target_species: species || null, notes: notes || null,
-        status: ["planned", "completed", "cancelled"].includes(status) ? status : trip.status,
-      }),
-    });
-    await loadTrips();
+    try {
+      const trip = (await api(`/api/trips/${t.dataset.edittrip}`));
+      const water = WATERS.find((w) => String(w.id) === String(trip.water_id));
+      const user = USERS.find((u) => String(u.id) === String(trip.user_id));
+      const name = prompt("Water name:", water?.name || "");
+      if (name === null) return;
+      const date = prompt("Date (YYYY-MM-DD):", trip.date);
+      if (date === null) return;
+      const species = prompt("Target species:", trip.target_species || "");
+      const notes = prompt("Notes:", trip.notes || "");
+      const status = prompt("Status (planned/completed/cancelled):", trip.status);
+      await api(`/api/trips/${trip.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          water_id: WATERS.find((w) => w.name === name)?.id,
+          date, target_species: species || null, notes: notes || null,
+          status: ["planned", "completed", "cancelled"].includes(status) ? status : trip.status,
+        }),
+      });
+      await loadTrips();
+    } catch (err) { alert("Failed: " + err.message); }
   }
 });
 
@@ -381,13 +387,16 @@ async function loadGear() {
   const g = await api("/api/gear");
   $("#gear-result").innerHTML = `
     <div class="card"><h3>Rods</h3>
-      ${g.rods.map((r) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(r.name)}</strong> + ${esc(r.pairing)} — ${esc(r.role)}</span></div>`).join("")}
+      ${g.rods.map((r) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(r.name)}</strong> — ${esc(r.use)}</span></div>`).join("")}
+    </div>
+    <div class="card"><h3>Reels</h3>
+      ${g.reels.map((r) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(r.name)}</strong> + ${esc(r.pairing)} — ${esc(r.line)}</span></div>`).join("")}
     </div>
     <div class="card"><h3>Lures</h3>
       ${g.lures.map((l) => `<div class="catch-row"><span class="cnt">▸</span><span>${esc(l)}</span></div>`).join("")}
     </div>
-    <div class="card"><h3>Boats</h3>
-      ${g.boats.map((b) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(b.name)}</strong> (${esc(b.experience)}) — ${esc(b.note)}</span></div>`).join("")}
+    <div class="card"><h3>Extras</h3>
+      ${g.extras.map((l) => `<div class="catch-row"><span class="cnt">▸</span><span>${esc(l)}</span></div>`).join("")}
     </div>`;
 }
 

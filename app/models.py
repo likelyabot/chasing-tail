@@ -1,7 +1,19 @@
 """Pydantic request/response models."""
+from datetime import date as _date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _check_iso_date(v: str | None) -> str | None:
+    """Reject non-ISO or impossible dates (e.g. 2026-13-45) with 422."""
+    if v is None:
+        return v
+    try:
+        _date.fromisoformat(v)
+    except (TypeError, ValueError):
+        raise ValueError("date must be a valid ISO date YYYY-MM-DD")
+    return v
 
 
 class UserIn(BaseModel):
@@ -34,6 +46,11 @@ class TripIn(BaseModel):
     notes: str | None = None
     status: Literal["planned", "completed", "cancelled"] = "planned"
 
+    @field_validator("date")
+    @classmethod
+    def _valid_date(cls, v: str | None) -> str | None:
+        return _check_iso_date(v)
+
 
 class TripUpdate(BaseModel):
     user_id: int | None = None
@@ -42,6 +59,11 @@ class TripUpdate(BaseModel):
     target_species: str | None = None
     notes: str | None = None
     status: Literal["planned", "completed", "cancelled"] | None = None
+
+    @field_validator("date")
+    @classmethod
+    def _valid_date(cls, v: str | None) -> str | None:
+        return _check_iso_date(v)
 
 
 class TripOut(TripIn):
