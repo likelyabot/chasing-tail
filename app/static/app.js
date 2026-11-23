@@ -197,9 +197,10 @@ $("#plan-form").addEventListener("submit", async (e) => {
       </div>
       ${p.suggestions.map((s, i) => `
         <div class="card sugg">
-          <h3>${i + 1}. ${esc(s.species)} <span class="chip planned">${esc(s.activity)}</span></h3>
+          <h3>${i + 1}. ${esc(s.species)} <span class="chip planned">${esc(s.activity)}</span>${s.winter_focus ? ' <span class="chip planned">winter focus</span>' : ""}</h3>
           <div class="meta">${esc(s.rod || "")}</div>
           <ul>
+            ${s.limits ? `<li><strong>Limits:</strong> ${esc(s.limits)}${s.limits_authority ? ` <span class="meta">(${esc(s.limits_authority)})</span>` : ""}</li>` : ""}
             ${(s.lures || []).map((l) => `<li><strong>Lure:</strong> ${esc(l)}</li>`).join("")}
             ${s.lines ? `<li><strong>Line:</strong> ${esc(s.lines)}</li>` : ""}
             ${(s.tips || []).map((t) => `<li>${esc(t)}</li>`).join("")}
@@ -211,11 +212,76 @@ $("#plan-form").addEventListener("submit", async (e) => {
           ${p.weather_notes.map((n) => `<li>${esc(n)}</li>`).join("")}
         </ul>
         <div class="meta">Engine: ${esc(p.engine)} · live weather: ${p.weather_live ? "yes" : "no"}</div>
-      </div>`;
+      </div>
+      ${planContextHtml(p)}`;
   } catch (err) {
     box.innerHTML = `<div class="card err">Planning failed: ${esc(err.message)}</div>`;
   }
 });
+
+// ---------- plan: dossier-sourced context blocks ----------
+function planContextHtml(p) {
+  let html = "";
+  // Standing reminders (e.g. Loon Lake road-status check) — always visible.
+  if (p.reminders && p.reminders.length) {
+    html += `<div class="card" style="border-left:4px solid #e0a13c">
+      <h3 style="margin-top:0">⚠ Reminders — ${esc(p.date || p.month_name || "")}</h3>
+      <ul style="color:var(--dim);font-size:.9rem;padding-left:20px;margin:6px 0">
+        ${p.reminders.map((r) => `<li>${esc(r)}</li>`).join("")}
+      </ul>
+    </div>`;
+  }
+  if (p.winter_targeting) {
+    html += `<div class="card">
+      <h3 style="margin-top:0">Winter targeting (Nov–Feb)</h3>
+      <div><strong>Focus:</strong> ${esc(p.winter_targeting.focus)}</div>
+      <div class="meta" style="margin-top:4px">${esc(p.winter_targeting.why)}</div>
+      ${p.winter_targeting.source ? `<div class="meta">${esc(p.winter_targeting.source)}</div>` : ""}
+    </div>`;
+  }
+  if (p.regs) {
+    const rows = (p.regs.species || []).map((r) => {
+      const lim = [];
+      if (r.daily_bag != null) lim.push(`${r.daily_bag}/day`);
+      if (r.possession != null) lim.push(`${r.possession} possession`);
+      if (r.size_limit) lim.push(r.size_limit);
+      if (r.conditions) lim.push(r.conditions);
+      return `<tr>
+        <td><strong>${esc(r.species)}</strong><div class="meta">${esc(r.season || "")}</div></td>
+        <td>${lim.length ? esc(lim.join("; ")) : "—"}</td>
+        <td class="meta">${esc(r.authority || "")}</td>
+      </tr>`;
+    }).join("");
+    html += `<div class="card">
+      <h3 style="margin-top:0">Regulations ${p.regs.zone ? `— ${esc(p.regs.zone)}` : ""}</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:.9rem">
+        <tr><th style="text-align:left">Species</th><th style="text-align:left">Limits</th><th style="text-align:left">Authority</th></tr>
+        ${rows}
+      </table>
+      ${p.regs.special_regs ? `<div class="meta" style="margin-top:6px">${esc(p.regs.special_regs)}</div>` : ""}
+      ${p.regs.health_advisory ? `<div class="meta" style="margin-top:4px">Health advisory: ${esc(p.regs.health_advisory)}</div>` : ""}
+      <div class="meta" style="margin-top:4px">Source: ${esc(p.regs.booklet || "")}</div>
+    </div>`;
+  }
+  if (p.stocking) {
+    const progs = (p.stocking.programs || []).map((pg) =>
+      `<li><strong>${esc(pg.program)}:</strong> ${esc(pg.detail)} <span class="meta">(${esc(pg.source || "")})</span></li>`).join("");
+    html += `<div class="card">
+      <h3 style="margin-top:0">Stocking</h3>
+      ${progs ? `<ul style="color:var(--dim);font-size:.9rem;padding-left:20px;margin:6px 0">${progs}</ul>` : ""}
+      <div class="meta" style="margin-top:4px">${esc(p.stocking.advice || "")}${p.stocking.source ? ` <span class="meta">(${esc(p.stocking.source)})</span>` : ""}</div>
+    </div>`;
+  }
+  if (p.water_context && p.water_context.length) {
+    html += `<div class="card">
+      <h3 style="margin-top:0">Water conditions (static context)</h3>
+      <ul style="color:var(--dim);font-size:.9rem;padding-left:20px;margin:6px 0">
+        ${p.water_context.map((f) => `<li>${esc(f.fact)} <span class="meta">(as of ${esc(f.as_of)} — ${esc(f.source)})</span></li>`).join("")}
+      </ul>
+    </div>`;
+  }
+  return html;
+}
 
 // ---------- weather ----------
 let wfGeneration = 0;
@@ -278,16 +344,26 @@ async function loadWeather() {
     if (usgs === null) {
       usgsHtml = `<div class="card meta">No USGS gauge configured for this water.</div>`;
     } else if (usgs.error) {
-      usgsHtml = `<div class="card"><h3 style="margin-top:0">USGS gauge ${esc(usgs.site || "")}</h3><div class="err">${esc(usgs.error)}</div></div>`;
+      usgsHtml = `<div class="card"><h3 style="margin-top:0">USGS gauges</h3><div class="err">${esc(usgs.error)}</div></div>`;
+    } else if (!(usgs.gauges || []).length) {
+      usgsHtml = `<div class="card meta">${esc(usgs.note || "No USGS gauge configured for this water.")}</div>`;
     } else {
-      const stale = usgs.stale ? ` <span class="stale">(cached ${fmtTs(usgs.fetched_at)}${usgs.note ? ", " + esc(usgs.note) : ""})</span>` : "";
-      usgsHtml = `
-        <div class="card">
-          <h3 style="margin-top:0">USGS gauge ${esc(usgs.site)} <span class="meta">via ${esc(usgs.source)}</span>${stale}</h3>
-          <div>Stage: <strong>${usgs.stage_ft != null ? usgs.stage_ft.toFixed(2) + " ft" : "—"}</strong>
-            ${usgs.storage_acft != null ? ` · Storage: <strong>${Math.round(usgs.storage_acft).toLocaleString()} ac-ft</strong>` : ""}
-            <span class="meta">as of ${esc(fmtTs(usgs.as_of))}</span></div>
-        </div>`;
+      const gs = usgs.gauges;
+      usgsHtml = `<div class="card">
+        <h3 style="margin-top:0">USGS gauges <span class="meta">fetched ${esc(fmtTs(usgs.fetched_at))}</span></h3>
+        ${gs.map((g) => {
+          const badge = g.status && g.status !== "live" ? ` <span class="stale">[${esc(g.status)}]</span>` : "";
+          const val = g.value != null
+            ? `<strong>${Number(g.value).toLocaleString()} ${esc(g.unit || "")}</strong>`
+            : "<strong>—</strong>";
+          return `<div style="margin:8px 0;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.08)">
+            <div><strong>${esc(g.label || g.site)}</strong> <span class="meta">USGS ${esc(g.site)} · ${esc(g.parameter || "")}${badge}</span></div>
+            <div>${val} <span class="meta">as of ${esc(fmtTs(g.as_of))} · via ${esc(g.source || "?")}</span></div>
+            ${g.spec_note ? `<div class="meta">${esc(g.spec_note)}</div>` : ""}
+            ${g.note ? `<div class="meta" style="color:#e0a13c">${esc(g.note)}</div>` : ""}
+          </div>`;
+        }).join("")}
+      </div>`;
     }
 
     box.innerHTML = nwsHtml + omHtml + usgsHtml;

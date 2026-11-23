@@ -22,6 +22,7 @@ class WaterOut(BaseModel):
     lon: float
     kind: str
     usgs_site: str | None
+    gauges: list = []
     notes: str | None
 
 

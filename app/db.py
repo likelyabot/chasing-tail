@@ -3,11 +3,12 @@
 Raw sqlite3 (kept dependency-light per the stack contract). Each request gets
 its own connection; WAL mode keeps readers from blocking the writer.
 """
+import json
 import sqlite3
 from pathlib import Path
 
 from . import config
-from .knowledge import WATER_SEEDS, SEED_USER
+from .knowledge import WATER_GAUGES, WATER_SEEDS, SEED_USER
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS waters (
     lon        REAL NOT NULL,
     kind       TEXT NOT NULL DEFAULT 'lake',
     usgs_site  TEXT,
+    gauges     TEXT,
     notes      TEXT
 );
 CREATE TABLE IF NOT EXISTS trips (
@@ -65,10 +67,23 @@ def init_db() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         _seed(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Lightweight forward migrations for pre-existing databases.
+
+    Waters is static seed data (no user write path), so adding columns and
+    refreshing seed rows on startup is safe and keeps deployed DBs converged
+    with the repo.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(waters)")}
+    if "gauges" not in cols:
+        conn.execute("ALTER TABLE waters ADD COLUMN gauges TEXT")
 
 
 def _seed(conn: sqlite3.Connection) -> None:
@@ -80,13 +95,23 @@ def _seed(conn: sqlite3.Connection) -> None:
             "INSERT INTO users (name, email) VALUES (?, ?)",
             (SEED_USER["name"], SEED_USER["email"]),
         )
-    # Static water bodies (INSERT OR IGNORE keeps re-seeds idempotent).
+    # Static water bodies. UPSERT (not INSERT OR IGNORE) so already-deployed
+    # DBs pick up revised seed data (notes, gauges, coords) on next boot.
     for w in WATER_SEEDS:
         cur.execute(
-            """INSERT OR IGNORE INTO waters
-               (slug, name, location, lat, lon, kind, usgs_site, notes)
-               VALUES (:slug, :name, :location, :lat, :lon, :kind, :usgs_site, :notes)""",
-            w,
+            """INSERT INTO waters
+               (slug, name, location, lat, lon, kind, usgs_site, gauges, notes)
+               VALUES (:slug, :name, :location, :lat, :lon, :kind, :usgs_site, :gauges, :notes)
+               ON CONFLICT(slug) DO UPDATE SET
+                 name = excluded.name,
+                 location = excluded.location,
+                 lat = excluded.lat,
+                 lon = excluded.lon,
+                 kind = excluded.kind,
+                 usgs_site = excluded.usgs_site,
+                 gauges = excluded.gauges,
+                 notes = excluded.notes""",
+            {**w, "gauges": json.dumps(WATER_GAUGES.get(w["slug"], []))},
         )
     conn.commit()
 

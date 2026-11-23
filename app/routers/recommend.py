@@ -2,6 +2,7 @@
 import asyncio
 import sqlite3
 from collections.abc import Iterator
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -29,6 +30,11 @@ async def recommend(
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     """Rule-based plan. live_weather=false skips upstream fetches (offline mode)."""
+    if date is not None:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(422, f"invalid date '{date}' — expected ISO format YYYY-MM-DD")
     row = db.get_water_by_slug(conn, water_slug)
     if not row:
         raise HTTPException(404, f"water '{water_slug}' not found")
@@ -37,7 +43,7 @@ async def recommend(
     om = usgs = None
     if live_weather:
         om, usgs = await asyncio.gather(
-            wx.open_meteo_hourly(water), wx.usgs_level(water)
+            wx.open_meteo_hourly(water), wx.usgs_gauges(water)
         )
     plan = rec.recommend(water_slug, date, species, om, usgs)
     plan["weather_live"] = bool(live_weather and om and "hourly" in om)
