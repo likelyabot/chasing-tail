@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fishing-app — trip planner</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">🎣 fishing-app <span class="sub">LAN trip planner</span></div>
+  <nav id="tabs">
+    <button data-tab="trips" class="active">Trips</button>
+    <button data-tab="plan">Plan</button>
+    <button data-tab="weather">Weather</button>
+    <button data-tab="gear">Gear</button>
+    <button data-tab="chat">Chat</button>
+  </nav>
+</header>
+<main>
+  <!-- ===================== TRIPS ===================== -->
+  <section id="tab-trips" class="tab">
+    <h2>Trips</h2>
+    <form id="trip-form" class="card form-grid">
+      <label>User <select id="tf-user"></select></label>
+      <label>Water <select id="tf-water"></select></label>
+      <label>Date <input id="tf-date" type="date" required></label>
+      <label>Target species <input id="tf-species" placeholder="e.g. rainbow trout (optional)"></label>
+      <label>Status
+        <select id="tf-status">
+          <option value="planned">planned</option>
+          <option value="completed">completed</option>
+          <option value="cancelled">cancelled</option>
+        </select>
+      </label>
+      <label class="wide">Notes <textarea id="tf-notes" rows="2" placeholder="access, goals, crew…"></textarea></label>
+      <div class="wide"><button type="submit">Add trip</button></div>
+    </form>
+    <div id="trip-list"></div>
+  </section>
+
+  <!-- ===================== PLAN ===================== -->
+  <section id="tab-plan" class="tab hidden">
+    <h2>Plan a trip</h2>
+    <form id="plan-form" class="card form-grid">
+      <label>Water <select id="pf-water"></select></label>
+      <label>Date <input id="pf-date" type="date"></label>
+      <label>Target species <input id="pf-species" placeholder="leave blank for “what’s most likely”"></label>
+      <label class="check"><input id="pf-live" type="checkbox" checked> use live weather</label>
+      <div class="wide"><button type="submit">Suggest</button></div>
+    </form>
+    <div id="plan-result"></div>
+  </section>
+
+  <!-- ===================== WEATHER ===================== -->
+  <section id="tab-weather" class="tab hidden">
+    <h2>Weather &amp; water levels</h2>
+    <div class="card row">
+      <label>Water <select id="wf-water"></select></label>
+      <button id="wf-go">Refresh</button>
+      <span id="wf-meta" class="meta"></span>
+    </div>
+    <div id="weather-result"></div>
+  </section>
+
+  <!-- ===================== GEAR ===================== -->
+  <section id="tab-gear" class="tab hidden">
+    <h2>Gear</h2>
+    <div id="gear-result"></div>
+  </section>
+
+  <!-- ===================== CHAT ===================== -->
+  <section id="tab-chat" class="tab hidden">
+    <h2>Chat <span class="badge" id="chat-badge">…</span></h2>
+    <div class="card">
+      <div id="chat-log" class="chat-log"></div>
+      <form id="chat-form" class="row">
+        <input id="chat-input" placeholder="Ask about a trip…" autocomplete="off">
+        <button type="submit">Send</button>
+      </form>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
