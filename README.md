@@ -10,7 +10,6 @@ tackle recommendations (with a kayak safety gate), and log catches.
 # Option A: Docker (mirrors production)
 docker build -t fishing-app:latest .
 docker run --rm -p 8090:8000 \
-  -e DATABASE_PATH=/tmp/fishing.db \
   -v fishing_app_data:/app/data \
   fishing-app:latest
 # open http://localhost:8090

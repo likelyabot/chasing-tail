@@ -3,6 +3,7 @@ import sqlite3
 from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from .. import db
 from ..services import weather as wx
@@ -26,5 +27,7 @@ async def weather_for_water(water_slug: str, conn: sqlite3.Connection = Depends(
     bundle = await wx.weather_bundle(dict(row))
     # Surface per-source failures as 200-with-errors (panel degrades gracefully).
     if bundle["nws"].get("error") and bundle["open_meteo"].get("error"):
-        raise HTTPException(502, "all weather sources failed; see response body for details")
+        # All sources failed: 502, but carry the bundle so per-source error
+        # details reach the client (a bare HTTPException would discard them).
+        return JSONResponse(status_code=502, content=bundle)
     return bundle

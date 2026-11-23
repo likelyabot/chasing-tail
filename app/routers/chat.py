@@ -7,7 +7,7 @@ internal LAN URL.
 import logging
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 
 from .. import config
 from ..models import ChatIn, ChatOut
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 @router.post("", response_model=ChatOut)
-async def chat(body: ChatIn, request: Request) -> ChatOut:
+async def chat(body: ChatIn) -> ChatOut:
     if not config.HERMES_CHAT_ENDPOINT:
         return ChatOut(
             enabled=False,
@@ -42,6 +42,8 @@ async def chat(body: ChatIn, request: Request) -> ChatOut:
             return ChatOut(enabled=True, reply=str(reply), upstream=upstream)
     except Exception as e:  # noqa: BLE001 — stub: report, don't crash
         log.warning("chat proxy failed: %s", e)
+        # enabled=True is deliberate: the feature IS configured (endpoint set),
+        # so the UI keeps the pane visible and surfaces the failure in `reply`.
         return ChatOut(
             enabled=True,
             reply=f"Chat upstream error: {e.__class__.__name__}. Try again shortly.",
