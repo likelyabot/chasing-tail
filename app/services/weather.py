@@ -161,9 +161,10 @@ async def _nws_gridpoint(client: httpx.AsyncClient, pts: dict) -> dict:
             "shortForecast": p["shortForecast"],
             "detailedForecast": p.get("detailedForecast"),
         })
-    payload = {"updateTime": data["properties"].get("updatedAt") or data["properties"].get("updated"),
+    props = data["properties"]
+    payload = {"updateTime": props.get("updateTime") or props.get("updatedAt") or props.get("updated"),
                "periods": periods,
-               "headline": ((data["properties"].get("headlines") or [{}])[0].get("text")),
+               "headline": ((props.get("headlines") or [{}])[0].get("text")),
                "_fetched_ts": time.time(), "stale": False}
     _write_cache(key, payload)
     return payload
@@ -179,6 +180,7 @@ async def nws_forecast(water: dict) -> dict:
         fp = await _nws_gridpoint(client, pts)
         if "error" in fp:
             return {"error": fp["error"], "office": pts.get("office")}
+        ts = fp.get("_fetched_ts")
         return {
             "office": pts["office"],
             "grid": pts["grid_id"],
@@ -188,6 +190,7 @@ async def nws_forecast(water: dict) -> dict:
             "updateTime": fp["updateTime"],
             "periods": fp["periods"],
             "stale": bool(fp.get("stale")),
+            "fetched_at": (datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds") if ts else None),
         }
     except Exception as e:  # noqa: BLE001 — panel must not 500
         log.warning("NWS forecast unexpected error: %s", e)
@@ -222,7 +225,7 @@ async def open_meteo_hourly(water: dict) -> dict:
         if cached:
             return cached
         return {"error": f"Open-Meteo unavailable: {e.__class__.__name__}"}
-    payload = {**data, "_fetched_ts": time.time(), "stale": False}
+    payload = {**data, "_fetched_ts": time.time(), "stale": False, "fetched_at": now_iso()}
     _write_cache(key, payload)
     return payload
 

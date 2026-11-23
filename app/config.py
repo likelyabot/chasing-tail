@@ -19,7 +19,6 @@ CACHE_DIR = Path(os.environ.get("CACHE_DIR", str(Path(DATABASE_PATH).parent / "c
 
 # Upstream fetch policy.
 UPSTREAM_TIMEOUT_S = float(os.environ.get("UPSTREAM_TIMEOUT_S", "20"))
-UPSTREAM_RETRIES = int(os.environ.get("UPSTREAM_RETRIES", "2"))
 USER_AGENT = "fishing-app/0.1 (LAN trip planner; contact: likelyabot@users.noreply.github.com)"
 
 # Cache TTLs (seconds).

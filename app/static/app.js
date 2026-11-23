@@ -28,7 +28,16 @@ async function api(path, opts = {}) {
   });
   if (!r.ok) {
     let detail = r.statusText;
-    try { detail = (await r.json()).detail || detail; } catch {}
+    try {
+      const b = await r.json();
+      if (typeof b.detail === "string") detail = b.detail;
+      else if (b.nws?.error || b.open_meteo?.error) {
+        // 502 weather bundle: surface per-source reasons instead of "Bad Gateway".
+        detail = [b.nws?.error && "NWS: " + b.nws.error,
+                  b.open_meteo?.error && "Open-Meteo: " + b.open_meteo.error]
+                 .filter(Boolean).join("; ") || detail;
+      }
+    } catch {}
     throw new Error(detail);
   }
   return r.status === 204 ? null : r.json();
@@ -309,7 +318,7 @@ async function loadWeather() {
     if (nws.error) {
       nwsHtml = `<div class="err">NWS: ${esc(nws.error)}</div>`;
     } else {
-      const stale = nws.stale ? ` <span class="stale">(cached ${fmtTs(nws.fetched_at)}, stale)</span>` : "";
+      const stale = nws.stale ? ` <span class="stale">(cached ${fmtTs(nws.fetched_at) || "?"}, stale)</span>` : "";
       nwsHtml = `
         <div class="card">
           <h3 style="margin-top:0">NWS forecast <span class="meta">(${esc(nws.office)} grid ${esc(nws.grid)},${esc(nws.gridY)})</span>${stale}</h3>
@@ -332,9 +341,10 @@ async function loadWeather() {
       const winds = (h.wind_speed_10m || []).slice(0, 24);
       const tMin = Math.min(...temps), tMax = Math.max(...temps);
       const wMax = Math.max(...winds, 0.1);
+      const omStale = om.stale ? ` <span class="stale">(cached ${fmtTs(om.fetched_at) || "?"}, stale)</span>` : "";
       omHtml = `
         <div class="card">
-          <h3 style="margin-top:0">Hourly (next 24h) <span class="meta">temp °C · wind km/h</span></h3>
+          <h3 style="margin-top:0">Hourly (next 24h) <span class="meta">temp °C · wind km/h</span>${omStale}</h3>
           <div class="hourbar">${temps.map((t, i) =>
             `<div class="bar" title="${esc(h.time[i])} ${t}°C wind ${winds[i]} km/h"
               style="height:${Math.round(((t - tMin) / Math.max(tMax - tMin, 0.1)) * 100)}%"></div>`).join("")}</div>
