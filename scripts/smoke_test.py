@@ -144,6 +144,23 @@ def main():
         print(f"      NWS sample: {periods[0]['name']} {periods[0]['temperature']}{periods[0].get('tempUnit', '')} {periods[0]['shortForecast']}")
     om = as_dict(wx).get("open_meteo", {})
     check("weather: Open-Meteo hourly present", st == 200 and len(om.get("hourly", {}).get("time", [])) >= 24)
+
+    # Imperial units at the source + sunrise/sunset exposure (regression:
+    # °C values cluster 0–25, °F for CA winter sits roughly 30–75).
+    om_daily = om.get("daily", {}) if isinstance(om, dict) else {}
+    sr, ss = om_daily.get("sunrise"), om_daily.get("sunset")
+    iso_like = lambda v: isinstance(v, str) and len(v) >= 16 and v[4] == "-" and "T" in v
+    check("weather: Open-Meteo daily.sunrise/sunset present (ISO local)",
+          st == 200 and isinstance(sr, list) and len(sr) >= 1 and iso_like(sr[0])
+          and isinstance(ss, list) and len(ss) >= 1 and iso_like(ss[0]),
+          f"(sunrise={sr!r:.60} sunset={ss!r:.60})")
+    om_temps = [t for t in (om.get("hourly", {}).get("temperature_2m") or [])
+                if isinstance(t, (int, float))]
+    check("weather: Open-Meteo hourly temps in °F plausibility range (0–120, CA winter)",
+          st == 200 and len(om_temps) >= 24
+          and all(0 <= t <= 120 for t in om_temps),
+          f"(n={len(om_temps)} min={min(om_temps) if om_temps else None} "
+          f"max={max(om_temps) if om_temps else None})")
     usgs = as_dict(wx).get("usgs")
     print(f"      USGS (Collins Lake): {usgs!r:.160}")
 

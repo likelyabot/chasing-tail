@@ -55,6 +55,7 @@ button.ghost { background: var(--panel2); color: var(--ink); border: 1px solid v
 button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .meta { color: var(--dim); font-size: .85rem; }
+.sunline { color: var(--accent2); font-size: 1.02rem; font-weight: 600; margin: 4px 0 12px; }
 .chip {
   display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: .78rem;
   border: 1px solid var(--border); color: var(--dim); margin-right: 6px;

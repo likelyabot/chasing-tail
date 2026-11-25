@@ -202,16 +202,21 @@ async def nws_forecast(water: dict) -> dict:
 # ---------------------------------------------------------------------------
 async def open_meteo_hourly(water: dict) -> dict:
     """48 h forecast. Returns the RAW Open-Meteo payload (nested 'hourly' and
-    'daily' dicts — the UI and engine consume wx['hourly'], km/h units) plus
+    'daily' dicts — the UI and engine consume wx['hourly'] in °F/mph units,
+    converted AT THE SOURCE via temperature_unit/wind_speed_unit) plus
     fetched_at/stale bookkeeping. Never raises; degrades to error dict."""
     client = _client_now()  # shared client — plain use; `async with` would close it
-    key = f"om_{water['slug']}"
+    # Key carries 'f' (imperial units): bumped from om_<slug> so the first
+    # post-deploy fetch is fresh and stale °C/km-h cache entries can never be
+    # served (even as a failure fallback).
+    key = f"om_f_{water['slug']}"
     cached = _read_cache(key)
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={water['lat']}&longitude={water['lon']}"
         "&hourly=temperature_2m,wind_speed_10m,wind_gusts_10m,precipitation_probability"
-        "&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max"
+        "&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,sunrise,sunset"
+        "&temperature_unit=fahrenheit&wind_speed_unit=mph"
         "&forecast_days=2&timezone=America/Los_Angeles"
     )
     try:

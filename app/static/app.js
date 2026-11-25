@@ -49,6 +49,14 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// Clock part of a local ISO datetime ("2026-11-25T06:42" -> "06:42").
+// Open-Meteo sunrise/sunset are already local (timezone param) — slicing
+// avoids Date-parsing TZ assumptions. Returns "" for anything unexpected.
+function fmtClockLocal(iso) {
+  if (typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso)) return "";
+  return iso.slice(11, 16);
+}
+
 function fmtTs(iso) {
   if (!iso) return "";
   try { return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }); }
@@ -438,16 +446,27 @@ async function loadWeather() {
       const tMin = Math.min(...temps), tMax = Math.max(...temps);
       const wMax = Math.max(...winds, 0.1);
       const omStale = om.stale ? ` <span class="stale">(cached ${fmtTs(om.fetched_at) || "?"}, stale)</span>` : "";
+      const d = om.daily || {};
+      // Sunrise/sunset arrive as LOCAL ISO strings (timezone=America/Los_Angeles)
+      // — slice the clock part directly; no Date parsing, no TZ assumptions.
+      // Missing fields degrade to a hidden line, never "undefined".
+      const sunUp = fmtClockLocal(Array.isArray(d.sunrise) ? d.sunrise[0] : null);
+      const sunDown = fmtClockLocal(Array.isArray(d.sunset) ? d.sunset[0] : null);
+      const sunBits = [];
+      if (sunUp) sunBits.push(`☀️ Sunrise ${sunUp}`);
+      if (sunDown) sunBits.push(`🌇 Sunset ${sunDown}`);
+      const sunLine = sunBits.length ? `<div class="sunline">${sunBits.join(" · ")}</div>` : "";
       omHtml = `
         <div class="card">
-          <h3 style="margin-top:0">Hourly (next 24h) <span class="meta">temp °C · wind km/h</span>${omStale}</h3>
+          <h3 style="margin-top:0">Hourly (next 24h) <span class="meta">temp °F · wind mph</span>${omStale}</h3>
+          ${sunLine}
           <div class="hourbar">${temps.map((t, i) =>
-            `<div class="bar" title="${esc(h.time[i])} ${t}°C wind ${winds[i]} km/h"
+            `<div class="bar" title="${esc(h.time[i])} ${t}°F wind ${winds[i]} mph"
               style="height:${Math.round(((t - tMin) / Math.max(tMax - tMin, 0.1)) * 100)}%"></div>`).join("")}</div>
           <div class="hourbar">${winds.map((wd, i) =>
-            `<div class="bar wind" title="wind ${wd} km/h"
+            `<div class="bar wind" title="wind ${wd} mph"
               style="height:${Math.round((wd / wMax) * 100)}%"></div>`).join("")}</div>
-          <div class="meta">range ${tMin}–${tMax} °C · peak wind ${Math.max(...winds)} km/h ·
+          <div class="meta">range ${tMin}–${tMax} °F · peak wind ${Math.max(...winds)} mph ·
             precip up to ${Math.max(...(h.precipitation_probability || [0]).slice(0, 24))}%</div>
         </div>`;
     }
@@ -494,15 +513,35 @@ let gearMsgTimer = null;
 
 async function loadGear() {
   if (gearEditing) return;  // don't clobber unsaved edits when switching tabs
-  renderGearView(await api("/api/gear"));
+  try {
+    renderGearView(await api("/api/gear"));
+  } catch (err) {
+    gearShowError("Could not load gear: " + err.message);
+  }
+}
+
+// Shape guard: the backend guarantees this (get_gear falls back to static
+// defaults on corrupt rows; PUT echoes the validated payload), but the view
+// must never blank the tab on bad input — surface the error instead.
+function isGearPayload(g) {
+  return !!g && typeof g === "object" &&
+    ["rods", "reels", "lures", "extras"].every((k) => Array.isArray(g[k]));
 }
 
 function renderGearView(g) {
+  if (!isGearPayload(g)) {
+    gearShowError("Unexpected gear data — please refresh.");
+    return;  // leave whatever is currently rendered in place
+  }
   gearEditing = false;
   const editBtn = $("#gear-edit");
   editBtn.hidden = false;
   editBtn.disabled = false;
   $("#gear-editor").setAttribute("hidden", "");
+  // renderGearEditor hid #gear-result when entering edit mode; it must be
+  // un-hidden here or the tab stays blank after Save/Cancel/Reset (the
+  // reported blank-page bug — the list was rendered into a hidden container).
+  $("#gear-result").removeAttribute("hidden");
   $("#gear-result").innerHTML = `
     <div class="card"><h3>Rods</h3>
       ${g.rods.map((r) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(r.name)}</strong> — ${esc(r.use)}</span></div>`).join("") || `<div class="meta">None listed.</div>`}
@@ -610,7 +649,11 @@ async function saveGear() {
 }
 
 async function cancelGear() {
-  renderGearView(await api("/api/gear"));
+  try {
+    renderGearView(await api("/api/gear"));
+  } catch (err) {
+    gearShowError("Cancel failed: " + err.message);
+  }
 }
 
 async function resetGear() {
@@ -639,7 +682,20 @@ async function gearApi(method) {
     } catch (_) { /* non-JSON error body — keep statusText */ }
     throw new Error(detail);
   }
-  return res.status === 204 ? null : res.json();
+  // 2xx handling: DELETE is 204 (null); PUT echoes the saved payload. If a
+  // 2xx ever arrives with an empty/non-JSON body, refetch instead of letting
+  // res.json() throw — callers must always receive a renderable payload.
+  if (res.status === 204) return null;
+  try {
+    return await res.json();
+  } catch (_) {
+    if (method === "PUT") {
+      const r2 = await fetch("/api/gear");
+      if (!r2.ok) throw new Error("saved, but refetch failed: " + r2.statusText);
+      return r2.json();
+    }
+    throw new Error("empty response from server");
+  }
 }
 
 $("#gear-edit").addEventListener("click", async () => {

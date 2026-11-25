@@ -1,7 +1,8 @@
 """Rule-based recommendation engine.
 
 Inputs: water slug, date (month), optional target species, optional live
-weather snapshot (Open-Meteo hourly, km/h units), USGS gauge bundle.
+weather snapshot (Open-Meteo hourly, °F/mph units — converted at the source),
+USGS gauge bundle.
 Outputs: ranked species suggestions with tactics mapped to owned tackle,
 weather modifiers, the kayak safety gate, and the dossier-sourced context
 blocks (regs, stocking, winter targeting, standing reminders, static water
@@ -103,7 +104,7 @@ def _gauge_delta(usgs: dict | None) -> float | None:
 
 def weather_modifiers(wx: dict | None, usgs: dict | None) -> list[str]:
     """Translate numeric weather into fishing advice. wx = open_meteo payload
-    (hourly, km/h). Defensive: nulls are filtered, averages divide by the
+    (hourly, °F/mph). Defensive: nulls are filtered, averages divide by the
     actual sample count, missing sources simply contribute no notes."""
     mods: list[str] = []
     if not wx or "hourly" not in wx:
@@ -124,12 +125,12 @@ def weather_modifiers(wx: dict | None, usgs: dict | None) -> list[str]:
             delta = next_avg - prev_avg
             if delta <= -5:
                 mods.append(
-                    f"Cold front expected (≈{delta:+.0f}°C/24h): pre-front bite surge, "
+                    f"Cold front expected (≈{delta:+.0f}°F/24h): pre-front bite surge, "
                     "then a lull — fish slower, smaller lures, and go a bit deeper."
                 )
             elif delta >= 5:
                 mods.append(
-                    f"Warming trend (≈{delta:+.0f}°C/24h): fish shallower and more aggressively."
+                    f"Warming trend (≈{delta:+.0f}°F/24h): fish shallower and more aggressively."
                 )
 
     # Wind band (peak over next 24h)
@@ -139,12 +140,12 @@ def weather_modifiers(wx: dict | None, usgs: dict | None) -> list[str]:
     band = _wind_band(peak_wind)
     if band == "rough":
         mods.append(
-            f"Wind picking up (peaks ≈{peak_wind:.0f} km/h): cast into the wind, "
+            f"Wind picking up (peaks ≈{peak_wind:.0f} mph): cast into the wind, "
             "favor sheltered coves and downwind shores; topwater less effective."
         )
     elif band == "severe":
         mods.append(
-            f"Strong wind (peaks ≈{peak_wind:.0f} km/h): rough water — focus on "
+            f"Strong wind (peaks ≈{peak_wind:.0f} mph): rough water — focus on "
             "protected bays and structure; consider postponing if boating."
         )
     elif band == "calm":
@@ -195,12 +196,14 @@ def kayak_gate(slug: str, wx: dict | None) -> dict:
         }
     wind = gust = None
     if wx and "hourly" in wx:
+        # Source is already mph (wind_speed_unit=mph) — NO km/h->mph factor
+        # here: multiplying would loosen the kayak gate by 1.6x.
         winds = _finite(wx["hourly"].get("wind_speed_10m") or [])
         gusts = _finite(wx["hourly"].get("wind_gusts_10m") or [])
         if winds:
-            wind = max(winds[0:24]) * 0.621371  # km/h -> mph
+            wind = max(winds[0:24])
         if gusts:
-            gust = max(gusts[0:24]) * 0.621371
+            gust = max(gusts[0:24])
 
     caution = (
         (wind is not None and wind >= KAYAK_RULES["wind_caution_mph"])
@@ -293,11 +296,14 @@ def recommend(slug: str, date_str: str | None, target_species: str | None,
             temps = _finite(wx["hourly"].get("temperature_2m") or [])
             winds = _finite(wx["hourly"].get("wind_speed_10m") or [])
             avg_t = _avg(temps[0:24])
-            if "trout" in species and avg_t is not None and avg_t <= 12:
+            # Species-vs-weather fit nudges. Thresholds are the original metric
+            # criteria expressed in the units the source now provides (°F/mph):
+            # 12°C = 53.6°F, 24°C = 75.2°F, 15 km/h = 9.32 mph — behavior unchanged.
+            if "trout" in species and avg_t is not None and avg_t <= 53.6:
                 wx_fit += 1
-            if "bass" in species and avg_t is not None and 12 <= avg_t <= 24:
+            if "bass" in species and avg_t is not None and 53.6 <= avg_t <= 75.2:
                 wx_fit += 1
-            if winds and max(winds[0:24]) < 15 and "trout" in species:
+            if winds and max(winds[0:24]) < 9.32 and "trout" in species:
                 wx_fit += 1
         score = season * 2 + min(wx_fit, 2)
         # Winter-targeting boost: the dossier's designated focus species for
