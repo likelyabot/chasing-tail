@@ -6,7 +6,8 @@ Usage: python3 scripts/smoke_test.py [BASE_URL]   (default http://localhost:8090
 Verifies the acceptance criteria:
   1. /healthz returns 200
   2. a second user can be created via API (multi-user capability)
-  3. trip + catch CRUD round-trip (create/list/update/delete)
+  3. trip + catch CRUD round-trip (create/list/update/delete); trip responses
+     expose water_slug (drives the inline per-card "in season + regs" panel)
   4. weather endpoint returns real live NWS data for Collins Lake
   5. kayak gate: Loon Lake always NO KAYAK
   6. dossier integration (2026-11-23 research-scout dossiers):
@@ -18,6 +19,8 @@ Verifies the acceptance criteria:
   7. gear: GET default shape, PUT round-trip, 422 on invalid payloads,
      DELETE resets to defaults, recommend works with edited gear
      (DB state restored before the final cleanup)
+  8. inline plan: GET /api/recommend with a created trip's water_slug+date
+     returns 200 with suggestions (the per-card Plan panel's data source)
 Exit code 0 = all pass.
 """
 import json
@@ -91,13 +94,29 @@ def main():
     })
     check("create trip -> 201", st == 201 and trip.get("water_name", "").startswith("Collins Lake"), f"(got {st} {trip!r:.120})")
     trip_id = trip.get("id")
+    check("create trip response includes water_slug",
+          st == 201 and as_dict(trip).get("water_slug") == "collins-lake", f"(got {as_dict(trip).get('water_slug')!r})")
 
     st, trips = req("GET", f"/api/trips?user_id={user_id}")
-    check("list trips contains new trip", st == 200 and any(t["id"] == trip_id for t in trips))
+    trip_rows = trips if isinstance(trips, list) else []
+    listed = next((t for t in trip_rows if t["id"] == trip_id), {})
+    check("list trips contains new trip", st == 200 and any(t["id"] == trip_id for t in trip_rows))
+    check("list trip response includes water_slug",
+          st == 200 and listed.get("water_slug") == "collins-lake", f"(got {listed.get('water_slug')!r})")
 
     st, trip = req("PATCH", f"/api/trips/{trip_id}", {"status": "completed", "notes": "edited"})
     check("update trip -> 200", st == 200 and trip.get("status") == "completed" and trip.get("notes") == "edited",
           f"(got {st} {trip!r:.120})")
+    check("updated trip response still carries water_slug",
+          st == 200 and as_dict(trip).get("water_slug") == "collins-lake", f"(got {as_dict(trip).get('water_slug')!r})")
+
+    # inline plan panel data source: recommend with the trip's own water_slug+date
+    st, plan_inline = req("GET", f"/api/recommend?water_slug={as_dict(trip).get('water_slug')}&date={as_dict(trip).get('date')}&live_weather=false")
+    sugg_inline = as_dict(plan_inline).get("suggestions", []) if st == 200 else []
+    check("inline plan: recommend with trip water_slug+date -> 200 with suggestions",
+          st == 200 and len(sugg_inline) >= 1
+          and sugg_inline[0].get("species") and sugg_inline[0].get("score") is not None,
+          f"(got {st} top={sugg_inline[0].get('species') if sugg_inline else None})")
 
     # 5. catch CRUD
     st, catch = req("POST", "/api/catches", {

@@ -69,6 +69,7 @@ class TripUpdate(BaseModel):
 class TripOut(TripIn):
     id: int
     water_name: str | None = None
+    water_slug: str | None = None
     user_name: str | None = None
     catch_count: int = 0
 

@@ -99,6 +99,21 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 #gear-editor .gear-actions { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 #gear-editor .gear-actions .spacer { flex: 1; }
 #gear-error { margin: 10px 0; }
+/* trip plan panel — lazy "in season + regs" on each trip card */
+.plan { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); }
+.plan summary { cursor: pointer; padding: 8px 12px; color: var(--accent); font-weight: 600; font-size: .9rem; user-select: none; }
+.plan summary::-webkit-details-marker { display: none; }
+.plan summary::before { content: "▸ "; }
+.plan[open] > summary::before { content: "▾ "; }
+.plan-body { padding: 0 12px 10px; font-size: .9rem; }
+.plan-picks { margin-bottom: 6px; line-height: 1.5; }
+.plan-reg, .plan-winter, .plan-stock { margin: 4px 0; color: var(--dim); }
+.plan-reg strong, .plan-winter strong, .plan-stock strong { color: var(--ink); }
+.plan-kayak { margin-top: 8px; }
+.kbadge { font-size: .75rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); font-weight: 700; }
+.kbadge.no { color: var(--danger); border-color: var(--danger); }
+.kbadge.caution { color: var(--warn); border-color: var(--warn); }
+.kbadge.ok { color: var(--ok); border-color: var(--ok); }
 @media (max-width: 560px) {
   #gear-editor .gear-row input { flex: 1 1 100%; min-width: 0; }
   #gear-editor .gear-row button { margin-left: auto; }

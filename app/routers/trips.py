@@ -20,9 +20,11 @@ def get_conn() -> Iterator[sqlite3.Connection]:
 
 def _row_to_out(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     d = dict(row)
-    d["water_name"] = conn.execute(
-        "SELECT name FROM waters WHERE id = ?", (row["water_id"],)
-    ).fetchone()["name"]
+    w = conn.execute(
+        "SELECT name, slug FROM waters WHERE id = ?", (row["water_id"],)
+    ).fetchone()
+    d["water_name"] = w["name"] if w else None
+    d["water_slug"] = w["slug"] if w else None
     d["user_name"] = conn.execute(
         "SELECT name FROM users WHERE id = ?", (row["user_id"],)
     ).fetchone()["name"]

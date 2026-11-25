@@ -93,6 +93,10 @@ async function loadTrips() {
         <input placeholder="spot" data-f="spot">
         <button class="ghost" data-savecatch="${t.id}">Log catch</button>
       </div>
+      <details class="plan">
+        <summary>Plan — in season + regs</summary>
+        <div class="plan-body" data-planbody="${t.id}" data-water="${esc(t.water_slug || "")}" data-date="${esc(t.date || "")}"></div>
+      </details>
       <div class="row" style="margin-top:10px">
         <button class="ghost" data-togglecatch="${t.id}">+ catch</button>
         <button class="ghost" data-edittrip="${t.id}">edit</button>
@@ -167,9 +171,101 @@ $("#trip-list").addEventListener("click", async (e) => {
           status: ["planned", "completed", "cancelled"].includes(status) ? status : trip.status,
         }),
       });
+      purgePlanCache(trip.id);  // water/date may have changed — stale plan is useless
       await loadTrips();
     } catch (err) { alert("Failed: " + err.message); }
+  } else if (t.dataset.planretry) {
+    const body = t.closest("details.plan")?.querySelector(".plan-body");
+    if (body) loadPlanFor(body);
   }
+});
+
+// ---------- trip plan panel (lazy "in season + regs" per card) ----------
+// Offline-by-design: live_weather=false (future-dated trips have no forecast;
+// the Plan tab remains the live-snapshot surface). Plans are fetched only on
+// first expand of a card, never in bulk on page load. The cache key includes
+// water_slug + date, so an edited trip misses the cache and refetches; the
+// edit handler also purges the trip's entries explicitly.
+const PLAN_CACHE = new Map();
+
+function planKey(tripId, waterSlug, dateStr) {
+  return `${tripId}|${waterSlug}|${dateStr}`;
+}
+
+function purgePlanCache(tripId) {
+  for (const k of PLAN_CACHE.keys()) {
+    if (k.startsWith(tripId + "|")) PLAN_CACHE.delete(k);
+  }
+}
+
+function renderPlanBody(body, p) {
+  const top3 = (p.suggestions || []).slice(0, 3);
+  const top = top3[0];
+  let html = "";
+  if (top3.length) {
+    html += `<div class="plan-picks">${top3.map((s, i) =>
+      `${i + 1}. <strong>${esc(s.species)}</strong> <span class="meta">(${esc(s.activity)}, score ${s.score})</span>`
+    ).join("<br>")}</div>`;
+  }
+  if (top && top.limits) {
+    html += `<div class="plan-reg"><strong>Regs — ${esc(top.species)}:</strong> ${esc(top.limits)}${
+      top.limits_authority ? ` <span class="meta">(${esc(top.limits_authority)})</span>` : ""}</div>`;
+  }
+  const special = (p.regs || {}).special_regs;
+  if (special) html += `<div class="plan-reg"><strong>Special:</strong> ${esc(special)}</div>`;
+  if (p.winter_targeting) {
+    html += `<div class="plan-winter">❄ <strong>Winter focus:</strong> ${esc(p.winter_targeting.focus)} ` +
+      `<span class="meta">— ${esc(p.winter_targeting.why)}</span></div>`;
+  }
+  if (p.stocking) {
+    const prog = (p.stocking.programs || [])[0];
+    const bits = [];
+    if (prog) bits.push(`<strong>${esc(prog.program)}:</strong> ${esc(prog.detail)}`);
+    if (p.stocking.advice) bits.push(esc(p.stocking.advice));
+    if (bits.length) html += `<div class="plan-stock">🐟 <strong>Stocking:</strong> ${bits.join(" ")}</div>`;
+  }
+  if (p.kayak) {
+    html += `<div class="plan-kayak"><span class="kbadge ${esc(p.kayak.level)}" ` +
+      `title="${esc(p.kayak.reason)}">${esc(p.kayak.flag)}</span></div>`;
+  }
+  if (!html) html = `<div class="meta">No plan data for this water.</div>`;
+  body.innerHTML = html;
+  body.dataset.state = "done";
+}
+
+async function loadPlanFor(body) {
+  const key = planKey(body.dataset.planbody, body.dataset.water, body.dataset.date);
+  const cached = PLAN_CACHE.get(key);
+  if (cached) { renderPlanBody(body, cached); return; }
+  body.dataset.state = "loading";
+  body.innerHTML = `<div class="meta">Building plan…</div>`;
+  try {
+    const q = new URLSearchParams({
+      water_slug: body.dataset.water,
+      date: body.dataset.date,
+      live_weather: "false",
+    });
+    const p = await api("/api/recommend?" + q.toString());
+    PLAN_CACHE.set(key, p);
+    renderPlanBody(body, p);
+  } catch (err) {
+    body.dataset.state = "error";
+    body.innerHTML = `<div class="err">Plan failed: ${esc(err.message)} ` +
+      `<button class="ghost" data-planretry="${body.dataset.planbody}" style="margin-left:8px">Retry</button></div>`;
+  }
+}
+
+$("#trip-list").addEventListener("toggle", (e) => {
+  const det = e.target instanceof Element ? e.target.closest("details.plan") : null;
+  if (!det || !det.open) return;
+  const body = det.querySelector(".plan-body");
+  if (!body || body.dataset.state === "loading" || body.dataset.state === "done") return;
+  if (!body.dataset.water) {
+    body.dataset.state = "error";
+    body.innerHTML = `<div class="err">No water on this trip — set a water to get a plan.</div>`;
+    return;
+  }
+  loadPlanFor(body);
 });
 
 $("#trip-form").addEventListener("submit", async (e) => {
