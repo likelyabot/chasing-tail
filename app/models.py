@@ -1,8 +1,8 @@
 """Pydantic request/response models."""
 from datetime import date as _date
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 
 def _check_iso_date(v: str | None) -> str | None:
@@ -103,3 +103,30 @@ class ChatOut(BaseModel):
     enabled: bool
     reply: str
     upstream: dict | None = None
+
+
+# ---------- gear (PUT /api/gear) ----------
+_Item = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+
+
+class RodIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    use: str = Field(default="", max_length=200)
+
+
+class ReelIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    pairing: str = Field(default="", max_length=100)
+    line: str = Field(default="", max_length=200)
+
+
+class GearIn(BaseModel):
+    """Full gear payload. Unknown TOP-LEVEL keys are rejected (422);
+    unknown keys inside individual rod/reel objects are ignored."""
+
+    model_config = {"extra": "forbid"}
+
+    rods: list[RodIn] = Field(max_length=50)
+    reels: list[ReelIn] = Field(max_length=50)
+    lures: list[_Item] = Field(max_length=100)
+    extras: list[_Item] = Field(max_length=100)

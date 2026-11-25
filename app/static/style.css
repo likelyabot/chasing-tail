@@ -91,3 +91,15 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 .msg.me { align-self: flex-end; background: var(--panel2); border: 1px solid var(--border); }
 .msg.bot { align-self: flex-start; background: #14352a; border: 1px solid #2a5a45; }
 #gear-result .card h3 { margin-top: 0; }
+#gear-editor .gear-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+#gear-editor .gear-row input { flex: 1; min-width: 110px; }
+#gear-editor .gear-row input[data-f="use"] { flex: 1.4; }
+#gear-editor .gear-row input[data-f="pairing"] { flex: .8; }
+#gear-editor textarea { width: 100%; min-height: 90px; resize: vertical; }
+#gear-editor .gear-actions { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+#gear-editor .gear-actions .spacer { flex: 1; }
+#gear-error { margin: 10px 0; }
+@media (max-width: 560px) {
+  #gear-editor .gear-row input { flex: 1 1 100%; min-width: 0; }
+  #gear-editor .gear-row button { margin-left: auto; }
+}

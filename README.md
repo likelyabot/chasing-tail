@@ -43,7 +43,7 @@ compose file fails fast if it's unset (LAN-only by design, no 0.0.0.0 bind).
 - `GET /api/waters` — the four seeded waters
 - `GET/POST/PATCH/DELETE /api/trips[/{id}]` — trip CRUD
 - `GET/POST/PATCH/DELETE /api/catches[/{id}]` — catch CRUD (nested under trips)
-- `GET /api/gear` — Angler's tackle
+- `GET/PUT/DELETE /api/gear` — tackle list (editable in UI; resets to repo defaults)
 - `GET /api/weather/{water_slug}` — NWS forecast + Open-Meteo hourly + USGS gauge
 - `GET /api/recommend?water_slug=&date=&species=&live_weather=` — rule-based plan
 - `POST /api/chat` — **stub**: proxies to `HERMES_CHAT_ENDPOINT` if set, else "disabled"
@@ -79,7 +79,9 @@ when sustained wind ≥ 10 mph or gusts ≥ 15 mph.
 ## Data
 
 Schema: `users`, `waters` (static seed), `trips`, `catches` (cascades with
-trips). One user (Angler) is seeded on first start; anyone can create trips
+trips), `gear` (single row — user-edited tackle, seeded once from the repo
+defaults and never refreshed on boot; `DELETE /api/gear` drops it back to
+defaults). One user (Angler) is seeded on first start; anyone can create trips
 and catches. No auth in v1 — trusted LAN only.
 
 ## Smoke test
@@ -91,4 +93,5 @@ python3 scripts/smoke_test.py http://localhost:8090
 ```
 
 Covers: healthz, user creation, trip+catch CRUD round-trip, live NWS weather
-for Collins Lake, and the kayak gate.
+for Collins Lake, the kayak gate, and the gear edit round-trip (PUT/422/
+DELETE + restore).

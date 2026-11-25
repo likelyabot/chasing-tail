@@ -15,7 +15,6 @@ import logging
 from datetime import date, datetime
 
 from ..knowledge import (
-    GEAR,
     KAYAK_RULES,
     MONTHS,
     REGS,
@@ -269,12 +268,16 @@ def _is_winter_focus(winter: dict | None, species: str) -> bool:
 
 
 def recommend(slug: str, date_str: str | None, target_species: str | None,
-              wx: dict | None = None, usgs: dict | None = None) -> dict:
+              wx: dict | None = None, usgs: dict | None = None, *, gear: dict) -> dict:
     """Rank species for a water/month and assemble the full plan.
 
     `date_str` should be validated by the router (422 on bad input); `_month`
     is a safe fallback regardless. `usgs` is the gauge bundle from
-    weather.usgs_gauges() (or an old single-gauge dict).
+    weather.usgs_gauges() (or an old single-gauge dict). `gear` is the
+    user's current tackle list (loaded via db.get_gear by the router) —
+    echoed into the plan; tactic strings still cite the original item names
+    (v1 behavior), and no lookup into gear is performed, so renamed/removed
+    items can never break the engine.
     """
     month = _month(date_str)
     species_map = SPECIES_BY_WATER_MONTH.get(slug, {})
@@ -377,7 +380,7 @@ def recommend(slug: str, date_str: str | None, target_species: str | None,
         "suggestions": suggestions,
         "weather_notes": weather_modifiers(wx, usgs),
         "kayak": kayak_gate(slug, wx),
-        "gear": GEAR,
+        "gear": gear,
         # Dossier-sourced context blocks (all traceable — see knowledge.py).
         "regs": {**(regs or {}), "booklet": REGS_BOOKLET} if regs else None,
         "stocking": STOCKING.get(slug),

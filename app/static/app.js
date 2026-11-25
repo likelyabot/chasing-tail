@@ -393,22 +393,167 @@ async function loadWeather() {
 $("#wf-go").addEventListener("click", loadWeather);
 
 // ---------- gear ----------
+let gearEditing = false;
+let gearMsgTimer = null;
+
 async function loadGear() {
-  const g = await api("/api/gear");
+  if (gearEditing) return;  // don't clobber unsaved edits when switching tabs
+  renderGearView(await api("/api/gear"));
+}
+
+function renderGearView(g) {
+  gearEditing = false;
+  const editBtn = $("#gear-edit");
+  editBtn.hidden = false;
+  editBtn.disabled = false;
+  $("#gear-editor").setAttribute("hidden", "");
   $("#gear-result").innerHTML = `
     <div class="card"><h3>Rods</h3>
-      ${g.rods.map((r) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(r.name)}</strong> — ${esc(r.use)}</span></div>`).join("")}
+      ${g.rods.map((r) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(r.name)}</strong> — ${esc(r.use)}</span></div>`).join("") || `<div class="meta">None listed.</div>`}
     </div>
     <div class="card"><h3>Reels</h3>
-      ${g.reels.map((r) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(r.name)}</strong> + ${esc(r.pairing)} — ${esc(r.line)}</span></div>`).join("")}
+      ${g.reels.map((r) => `<div class="catch-row"><span class="cnt">▸</span><span><strong>${esc(r.name)}</strong> + ${esc(r.pairing)} — ${esc(r.line)}</span></div>`).join("") || `<div class="meta">None listed.</div>`}
     </div>
     <div class="card"><h3>Lures</h3>
-      ${g.lures.map((l) => `<div class="catch-row"><span class="cnt">▸</span><span>${esc(l)}</span></div>`).join("")}
+      ${g.lures.map((l) => `<div class="catch-row"><span class="cnt">▸</span><span>${esc(l)}</span></div>`).join("") || `<div class="meta">None listed.</div>`}
     </div>
     <div class="card"><h3>Extras</h3>
-      ${g.extras.map((l) => `<div class="catch-row"><span class="cnt">▸</span><span>${esc(l)}</span></div>`).join("")}
+      ${g.extras.map((l) => `<div class="catch-row"><span class="cnt">▸</span><span>${esc(l)}</span></div>`).join("") || `<div class="meta">None listed.</div>`}
     </div>`;
 }
+
+function gearFlash(msg) {
+  $("#gear-msg").textContent = msg;
+  clearTimeout(gearMsgTimer);
+  gearMsgTimer = setTimeout(() => ($("#gear-msg").textContent = ""), 2500);
+}
+
+const rodRowHtml = (r) => `<div class="gear-row">
+  <input data-f="name" maxlength="100" placeholder="rod name" value="${esc(r.name)}">
+  <input data-f="use" maxlength="200" placeholder="used for…" value="${esc(r.use)}">
+  <button class="danger" data-delrow="rods" style="padding:4px 10px">✕</button>
+</div>`;
+const reelRowHtml = (r) => `<div class="gear-row">
+  <input data-f="name" maxlength="100" placeholder="reel name" value="${esc(r.name)}">
+  <input data-f="pairing" maxlength="100" placeholder="pairs with" value="${esc(r.pairing)}">
+  <input data-f="line" maxlength="200" placeholder="line" value="${esc(r.line)}">
+  <button class="danger" data-delrow="reels" style="padding:4px 10px">✕</button>
+</div>`;
+
+function renderGearEditor(g) {
+  gearEditing = true;
+  $("#gear-edit").hidden = true;
+  $("#gear-result").setAttribute("hidden", "");
+  const ed = $("#gear-editor");
+  ed.removeAttribute("hidden");
+  ed.innerHTML = `
+    <div class="card"><h3>Rods</h3>
+      <div id="gear-rods">${g.rods.map(rodRowHtml).join("")}</div>
+      <button class="ghost" data-addrow="rods" style="margin-top:8px">+ add rod</button>
+    </div>
+    <div class="card"><h3>Reels</h3>
+      <div id="gear-reels">${g.reels.map(reelRowHtml).join("")}</div>
+      <button class="ghost" data-addrow="reels" style="margin-top:8px">+ add reel</button>
+    </div>
+    <div class="card"><h3>Lures <span class="meta">one per line</span></h3>
+      <textarea id="gear-lures" rows="6">${esc(g.lures.join("\n"))}</textarea>
+    </div>
+    <div class="card"><h3>Extras <span class="meta">one per line</span></h3>
+      <textarea id="gear-extras" rows="3">${esc(g.extras.join("\n"))}</textarea>
+    </div>
+    <div id="gear-error" class="err" hidden></div>
+    <div class="card gear-actions">
+      <button id="gear-save">Save</button>
+      <button id="gear-cancel" class="ghost">Cancel</button>
+      <button id="gear-reset" class="danger">Reset to defaults</button>
+      <span class="spacer"></span>
+      <span class="meta">Saves replace the whole list.</span>
+    </div>`;
+  ed.onclick = (e) => {
+    const t = e.target.closest("button");
+    if (!t) return;
+    if (t.dataset.addrow === "rods") $("#gear-rods").insertAdjacentHTML("beforeend", rodRowHtml({ name: "", use: "" }));
+    else if (t.dataset.addrow === "reels") $("#gear-reels").insertAdjacentHTML("beforeend", reelRowHtml({ name: "", pairing: "", line: "" }));
+    else if (t.dataset.delrow) t.closest(".gear-row").remove();
+  };
+  $("#gear-save").onclick = saveGear;
+  $("#gear-cancel").onclick = cancelGear;
+  $("#gear-reset").onclick = resetGear;
+}
+
+function collectGear() {
+  const pick = (row, f) => row.querySelector(`[data-f="${f}"]`).value.trim();
+  return {
+    rods: $$("#gear-rods .gear-row").map((r) => ({ name: pick(r, "name"), use: pick(r, "use") })),
+    reels: $$("#gear-reels .gear-row").map((r) => ({
+      name: pick(r, "name"), pairing: pick(r, "pairing"), line: pick(r, "line"),
+    })),
+    lures: $("#gear-lures").value.split("\n").map((s) => s.trim()).filter(Boolean),
+    extras: $("#gear-extras").value.split("\n").map((s) => s.trim()).filter(Boolean),
+  };
+}
+
+function gearShowError(msg) {
+  const el = $("#gear-error");
+  if (el) {
+    el.textContent = msg;
+    el.hidden = false;
+  } else {
+    gearFlash(msg);  // editor not mounted (e.g. GET failed) — use the toolbar slot
+  }
+}
+
+async function saveGear() {
+  try {
+    const saved = await gearApi("PUT");
+    renderGearView(saved);
+    gearFlash("Saved");
+  } catch (err) {
+    gearShowError("Save failed: " + err.message);
+  }
+}
+
+async function cancelGear() {
+  renderGearView(await api("/api/gear"));
+}
+
+async function resetGear() {
+  if (!confirm("Reset gear to the repo defaults? Your edits will be lost.")) return;
+  try {
+    await gearApi("DELETE");
+    renderGearView(await api("/api/gear"));
+    gearFlash("Reset to defaults");
+  } catch (err) {
+    gearShowError("Reset failed: " + err.message);
+  }
+}
+
+// PUT/DELETE with readable 422 detail (field + message) instead of bare status text.
+async function gearApi(method) {
+  const opts = { method, headers: { "Content-Type": "application/json" } };
+  if (method === "PUT") opts.body = JSON.stringify(collectGear());
+  const res = await fetch("/api/gear", opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const j = await res.json();
+      const errs = (Array.isArray(j.detail) ? j.detail : []).map(
+        (e) => `${e.msg || ""}${e.loc ? " [" + e.loc.slice(-2).join(".") + "]" : ""}`);
+      if (errs.length) detail = errs.join("; ");
+    } catch (_) { /* non-JSON error body — keep statusText */ }
+    throw new Error(detail);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+$("#gear-edit").addEventListener("click", async () => {
+  if (gearEditing) return;
+  try {
+    renderGearEditor(await api("/api/gear"));
+  } catch (err) {
+    gearShowError("Could not load gear: " + err.message);
+  }
+});
 
 // ---------- chat (stub) ----------
 async function loadChatBadge() {

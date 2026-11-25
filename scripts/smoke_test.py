@@ -15,6 +15,9 @@ Verifies the acceptance criteria:
      - mid-Dec Sacramento trip recommends chinook (2/day, 4 possession)
      - Loon trip shows NO KAYAK flag AND road-status reminder
      - invalid ?date= -> 422
+  7. gear: GET default shape, PUT round-trip, 422 on invalid payloads,
+     DELETE resets to defaults, recommend works with edited gear
+     (DB state restored before the final cleanup)
 Exit code 0 = all pass.
 """
 import json
@@ -297,6 +300,54 @@ def main():
     check("chat stub: disabled notice when endpoint unset",
           st == 200 and chat.get("enabled") is False and "disabled" in chat.get("reply", "").lower(),
           f"(got {st} {chat!r:.120})")
+
+    # ---- gear: DB-backed, editable (state restored before cleanup) ----
+    st, orig_gear = req("GET", "/api/gear")
+    check("gear: GET returns default shape (rods/reels/lures/extras)",
+          st == 200 and isinstance(orig_gear, dict)
+          and all(isinstance(orig_gear.get(k), list) for k in ("rods", "reels", "lures", "extras")),
+          f"(got {st} {orig_gear!r:.120})")
+
+    mod = json.loads(json.dumps(orig_gear))  # deep copy
+    mod["rods"][0]["name"] = "Smoke Rod X"
+    st, saved = req("PUT", "/api/gear", mod)
+    check("gear: PUT modified payload -> 200 (echoes saved)",
+          st == 200 and isinstance(saved, dict) and saved.get("rods", [{}])[0].get("name") == "Smoke Rod X",
+          f"(got {st} {saved!r:.120})")
+    st, g2 = req("GET", "/api/gear")
+    check("gear: GET reflects the change", st == 200 and g2.get("rods", [{}])[0].get("name") == "Smoke Rod X",
+          f"(got {st} {g2!r:.120})")
+
+    bad = json.loads(json.dumps(mod))
+    bad["rods"][0]["name"] = "x" * 101  # over the 100-char limit
+    st, _ = req("PUT", "/api/gear", bad)
+    check("gear: PUT oversize rod name -> 422", st == 422, f"(got {st})")
+    st, _ = req("PUT", "/api/gear", {"rods": "not-a-list", "reels": [], "lures": [], "extras": []})
+    check("gear: PUT bad shape -> 422", st == 422, f"(got {st})")
+    st, _ = req("PUT", "/api/gear", {**mod, "bogus_top_level_key": 1})
+    check("gear: PUT unknown top-level key -> 422", st == 422, f"(got {st})")
+    st, g3 = req("GET", "/api/gear")
+    check("gear: rejected PUTs leave state intact", st == 200 and g3.get("rods", [{}])[0].get("name") == "Smoke Rod X",
+          f"(got {st} {g3!r:.120})")
+
+    st, pe = req("GET", "/api/recommend?water_slug=collins-lake&date=2026-12-15&live_weather=false")
+    check("gear: recommend 200 with edited gear (plan echoes it)",
+          st == 200 and pe.get("gear", {}).get("rods", [{}])[0].get("name") == "Smoke Rod X",
+          f"(got {st} gear_rods={(as_dict(pe).get('gear') or {}).get('rods')!r:.120})")
+
+    st, _ = req("DELETE", "/api/gear")
+    check("gear: DELETE -> 204", st == 204, f"(got {st})")
+    st, g4 = req("GET", "/api/gear")
+    check("gear: GET after DELETE back to defaults (edit gone)",
+          st == 200 and all(r.get("name") != "Smoke Rod X" for r in g4.get("rods", []))
+          and all(isinstance(g4.get(k), list) for k in ("rods", "reels", "lures", "extras")),
+          f"(got {st} {g4!r:.120})")
+
+    # Restore whatever was there before the suite ran (defaults on a fresh DB).
+    st, _ = req("PUT", "/api/gear", orig_gear)
+    st, g5 = req("GET", "/api/gear")
+    check("gear: original payload restored (suite leaves DB as found)",
+          st == 200 and g5 == orig_gear, f"(got {st})")
 
     # 9. cleanup: delete catch + trip
     st, _ = req("DELETE", f"/api/catches/{catch_id}")

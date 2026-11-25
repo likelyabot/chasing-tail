@@ -4,11 +4,15 @@ Raw sqlite3 (kept dependency-light per the stack contract). Each request gets
 its own connection; WAL mode keeps readers from blocking the writer.
 """
 import json
+import logging
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
-from .knowledge import WATER_GAUGES, WATER_SEEDS, SEED_USER
+from .knowledge import GEAR, WATER_GAUGES, WATER_SEEDS, SEED_USER
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -49,6 +53,11 @@ CREATE TABLE IF NOT EXISTS catches (
     logged_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_catches_trip ON catches(trip_id);
+CREATE TABLE IF NOT EXISTS gear (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    payload    TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -113,7 +122,19 @@ def _seed(conn: sqlite3.Connection) -> None:
                  notes = excluded.notes""",
             {**w, "gauges": json.dumps(WATER_GAUGES.get(w["slug"], []))},
         )
+    # User-editable tackle: seed the single row ONLY when the table is empty.
+    # Deliberately NOT an upsert — user edits must survive redeploys.
+    cur.execute("SELECT COUNT(*) FROM gear")
+    if cur.fetchone()[0] == 0:
+        cur.execute(
+            "INSERT INTO gear (id, payload, updated_at) VALUES (1, ?, ?)",
+            (json.dumps(GEAR), _utcnow()),
+        )
     conn.commit()
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def get_water_by_slug(conn: sqlite3.Connection, slug: str) -> sqlite3.Row | None:
@@ -122,3 +143,46 @@ def get_water_by_slug(conn: sqlite3.Connection, slug: str) -> sqlite3.Row | None
 
 def get_user(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+# Keys every gear payload must carry (validated on PUT; enforced here so a
+# hand-tampered row degrades to the static defaults instead of breaking UI/engine).
+_GEAR_KEYS = ("rods", "reels", "lures", "extras")
+
+
+def get_gear(conn: sqlite3.Connection) -> dict:
+    """User's tackle list, or the static GEAR defaults when the row is
+    missing or its JSON is corrupt/unshaped (logged, never raised)."""
+    row = conn.execute("SELECT payload FROM gear WHERE id = 1").fetchone()
+    if row is None:
+        return GEAR
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError):
+        log.warning("gear row has corrupt JSON — serving static GEAR defaults")
+        return GEAR
+    if not isinstance(payload, dict) or any(
+        not isinstance(payload.get(k), list) for k in _GEAR_KEYS
+    ):
+        log.warning("gear row has unexpected shape — serving static GEAR defaults")
+        return GEAR
+    return payload
+
+
+def save_gear(conn: sqlite3.Connection, payload: dict) -> dict:
+    """Upsert the single gear row (caller validates the payload first)."""
+    conn.execute(
+        """INSERT INTO gear (id, payload, updated_at) VALUES (1, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             payload = excluded.payload,
+             updated_at = excluded.updated_at""",
+        (json.dumps(payload), _utcnow()),
+    )
+    conn.commit()
+    return payload
+
+
+def delete_gear(conn: sqlite3.Connection) -> None:
+    """Drop the gear row so get_gear falls back to the repo defaults."""
+    conn.execute("DELETE FROM gear WHERE id = 1")
+    conn.commit()

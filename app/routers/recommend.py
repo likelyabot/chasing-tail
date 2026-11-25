@@ -45,6 +45,6 @@ async def recommend(
         om, usgs = await asyncio.gather(
             wx.open_meteo_hourly(water), wx.usgs_gauges(water)
         )
-    plan = rec.recommend(water_slug, date, species, om, usgs)
+    plan = rec.recommend(water_slug, date, species, om, usgs, gear=db.get_gear(conn))
     plan["weather_live"] = bool(live_weather and om and "hourly" in om)
     return plan
