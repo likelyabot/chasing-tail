@@ -102,9 +102,7 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 /* trip plan panel — lazy "in season + regs" on each trip card */
 .plan { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); }
 .plan summary { cursor: pointer; padding: 8px 12px; color: var(--accent); font-weight: 600; font-size: .9rem; user-select: none; }
-.plan summary::-webkit-details-marker { display: none; }
-.plan summary::before { content: "▸ "; }
-.plan[open] > summary::before { content: "▾ "; }
+.plan summary::marker { color: var(--accent); }
 .plan-body { padding: 0 12px 10px; font-size: .9rem; }
 .plan-picks { margin-bottom: 6px; line-height: 1.5; }
 .plan-reg, .plan-winter, .plan-stock { margin: 4px 0; color: var(--dim); }
