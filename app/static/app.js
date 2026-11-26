@@ -16,6 +16,7 @@ $$("#tabs button").forEach((btn) =>
     $("#tab-" + btn.dataset.tab).classList.remove("hidden");
     if (btn.dataset.tab === "weather") loadWeather();
     if (btn.dataset.tab === "gear") loadGear();
+    if (btn.dataset.tab === "community") loadCommunity();
     if (btn.dataset.tab === "chat") loadChatBadge();
   })
 );
@@ -727,6 +728,157 @@ $("#gear-edit").addEventListener("click", async () => {
     renderGearEditor(await api("/api/gear"));
   } catch (err) {
     gearShowError("Could not load gear: " + err.message);
+  }
+});
+
+// ---------- community (FishBrain imports + Reddit feed) ----------
+let cmWater = "";
+let cmDays = 7;
+let cmGen = 0;
+
+// Chip labels for water slugs (shorter than the full WATERS names).
+const CM_WATER_NAMES = {
+  "collins-lake": "Collins Lake",
+  "new-bullards-bar": "New Bullards Bar",
+  "loon-lake": "Loon Lake",
+  "sacramento-river-westport": "Sacramento River",
+};
+
+$("#cm-filter").addEventListener("click", (e) => {
+  const t = e.target.closest("button");
+  if (!t) return;
+  if (t.classList.contains("cm-water")) {
+    cmWater = t.dataset.water;
+    $$("#cm-filter .cm-water").forEach((b) => b.classList.toggle("active", b === t));
+  } else if (t.classList.contains("cm-days")) {
+    cmDays = parseInt(t.dataset.days, 10);
+    $$("#cm-filter .cm-days").forEach((b) => b.classList.toggle("active", b === t));
+  } else {
+    return;
+  }
+  loadCommunity();
+});
+
+function cmWaterLabel(slug) {
+  if (!slug) return "Other";
+  return CM_WATER_NAMES[slug] || slug;
+}
+
+async function loadCommunity() {
+  const gen = ++cmGen;
+  const q = new URLSearchParams();
+  if (cmWater) q.set("water_slug", cmWater);
+  q.set("days", String(cmDays));
+  const fbBox = $("#cm-fb-rows");
+  const rdBox = $("#cm-rd-posts");
+  fbBox.innerHTML = `<div class="meta">Loading…</div>`;
+  rdBox.innerHTML = `<div class="meta">Loading…</div>`;
+  try {
+    const d = await api("/api/community?" + q.toString());
+    if (gen !== cmGen) return;  // superseded by a newer filter click
+    renderFbSection(d.fishbrain || {});
+    renderRdSection(d.reddit || {});
+  } catch (err) {
+    if (gen !== cmGen) return;
+    fbBox.innerHTML = `<div class="err">Community failed: ${esc(err.message)}</div>`;
+    rdBox.innerHTML = "";
+  }
+}
+
+function renderFbSection(fb) {
+  // Import batch list with per-batch Undo.
+  const batches = fb.batches || [];
+  $("#cm-fb-batches").innerHTML = batches.length
+    ? batches.map((b) => `
+      <div class="cm-batch">
+        <span class="meta">batch ${esc(b.batch_id)} · ${b.row_count} rows · ${esc(fmtTs(b.imported_at))}${b.source_label ? " · " + esc(b.source_label) : ""}</span>
+        <button class="danger" data-undobat="${esc(b.batch_id)}" style="padding:3px 10px">Undo</button>
+      </div>`).join("")
+    : "";
+
+  const rows = fb.rows || [];
+  $("#cm-fb-rows").innerHTML = rows.length
+    ? rows.map((r) => `
+      <div class="cm-entry">
+        <div><strong>${esc(r.species || "(unknown species)")}</strong>
+          <span class="chip">${esc(cmWaterLabel(r.water))}</span></div>
+        <div class="meta">${r.date ? esc(r.date) : "undated"}${r.weight_lb != null ? ` · ${r.weight_lb} lb` : ""}${r.length_in != null ? ` · ${r.length_in} in` : ""}${r.location ? ` · ${esc(r.location)}` : ""}</div>
+        ${r.notes ? `<div class="meta">${esc(r.notes)}</div>` : ""}
+        ${r.photo_url ? `<div class="meta">📷 <a href="${esc(r.photo_url)}" target="_blank" rel="noopener noreferrer">photo</a></div>` : ""}
+      </div>`).join("")
+    : `<div class="meta">No imports yet — paste a FishBrain export.</div>`;
+}
+
+function renderRdSection(rd) {
+  const badge = $("#cm-rd-badge");
+  const subs = (rd.subs || []).map((s) => "r/" + s).join(", ");
+  $("#cm-rd-subs").textContent = subs ? "(" + subs + ")" : "";
+  const box = $("#cm-rd-posts");
+  if (!rd.enabled) {
+    badge.textContent = "disabled";
+    box.innerHTML = `<div class="meta cm-muted">${esc(rd.notice || "Reddit feed: configure REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET in Portainer to enable.")}</div>`;
+    return;
+  }
+  badge.textContent = rd.stale ? "stale" : "live";
+  let html = "";
+  if (rd.stale) {
+    html += `<div class="stale">Feed stale (last fetched ${esc(fmtTs(rd.fetched_at)) || "?"}) — Reddit unreachable.${rd.error ? ` ${esc(rd.error)}` : ""}</div>`;
+  }
+  const posts = rd.posts || [];
+  html += posts.length
+    ? posts.map((p) => `
+      <a class="cm-entry cm-link" href="${esc(p.permalink)}" target="_blank" rel="noopener noreferrer">
+        <div><strong>${esc(p.title)}</strong>
+          <span class="chip">r/${esc(p.sub)}</span>
+          <span class="chip">${esc(cmWaterLabel(p.matched_water))}</span></div>
+        <div class="meta">u/${esc(p.author)} · ${esc(fmtTs(p.created_utc))}</div>
+        ${p.selftext_excerpt ? `<div class="meta">${esc(p.selftext_excerpt)}</div>` : ""}
+      </a>`).join("")
+    : `<div class="meta">No posts in this window.</div>`;
+  box.innerHTML = html;
+}
+
+$("#cm-fb-import-btn").addEventListener("click", async () => {
+  const ta = $("#cm-fb-text");
+  const text = ta.value.trim();
+  const sum = $("#cm-fb-summary");
+  if (!text) { sum.textContent = "Nothing to import."; return; }
+  const btn = $("#cm-fb-import-btn");
+  btn.disabled = true;
+  sum.textContent = "Importing…";
+  try {
+    const r = await fetch("/api/community/fishbrain/import", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: text,
+    });
+    let body = null;
+    try { body = await r.json(); } catch { /* non-JSON error body */ }
+    if (!r.ok) {
+      let detail = r.statusText;
+      if (body && typeof body.detail === "string") detail = body.detail;
+      throw new Error(detail);
+    }
+    ta.value = "";
+    sum.textContent = `Imported ${body.imported}, skipped ${body.skipped} (batch ${body.batch_id})`;
+    await loadCommunity();
+  } catch (err) {
+    sum.textContent = "Import failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#cm-fb-batches").addEventListener("click", async (e) => {
+  const t = e.target.closest("[data-undobat]");
+  if (!t) return;
+  if (!confirm("Remove this import batch?")) return;
+  try {
+    await api(`/api/community/fishbrain/import/${encodeURIComponent(t.dataset.undobat)}`, { method: "DELETE" });
+    $("#cm-fb-summary").textContent = "Batch removed.";
+    await loadCommunity();
+  } catch (err) {
+    alert("Failed: " + err.message);
   }
 });
 

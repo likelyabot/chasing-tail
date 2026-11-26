@@ -26,6 +26,9 @@ Verifies the acceptance criteria:
      pure function app.services.lunar.moon_phase reproduces three published
      almanac dates (2026-11-09 new, 2026-11-24 full, 2026-12-09 new) within
      tolerance via direct import (no server needed for those checks)
+  10. community: FishBrain CSV+JSON import (fuzzy columns, tolerant dates,
+      water matching, batch undo), unified GET filters, Reddit disabled path
+      (env unset), hermetic parser/matching fixtures (no live Reddit calls)
 Exit code 0 = all pass.
 """
 import json
@@ -34,7 +37,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, timedelta
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
@@ -45,6 +48,14 @@ from app.services.lunar import moon_phase
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8090"
 PASS, FAIL = 0, 0
+
+# Hermetic community parser/matching checks (pure functions only — no
+# server, no network, no live Reddit calls; repo root already on sys.path).
+from app.services.community import (  # noqa: E402
+    match_water,
+    normalize_reddit_child,
+    parse_fishbrain_export,
+)
 
 
 def check(name, cond, detail=""):
@@ -62,6 +73,24 @@ def req(method, path, body=None, timeout=90):
     r = urllib.request.Request(
         BASE + path, data=data, method=method,
         headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors="replace")
+        try:
+            return e.code, json.loads(raw)
+        except ValueError:
+            return e.code, raw
+
+
+def req_raw(method, path, text, ctype="text/plain", timeout=90):
+    """Like req() but sends a RAW text body (FishBrain CSV/JSON paste)."""
+    r = urllib.request.Request(
+        BASE + path, data=text.encode("utf-8"), method=method,
+        headers={"Content-Type": ctype},
     )
     try:
         with urllib.request.urlopen(r, timeout=timeout) as resp:
@@ -436,7 +465,207 @@ def main():
     check("gear: original payload restored (suite leaves DB as found)",
           st == 200 and g5 == orig_gear, f"(got {st})")
 
-    # 9. cleanup: delete catch + trip
+    # ---- community: FishBrain import + Reddit (disabled) ----
+    # Snapshot so the suite can prove it leaves the DB as found.
+    st, _snap = req("GET", "/api/community?days=3650")
+    snap_fb = as_dict(_snap).get("fishbrain", {})
+    prior_rows = len(snap_fb.get("rows", []))
+    prior_batches = len(snap_fb.get("batches", []))
+
+    # Hermetic water-matching checks (fixtures only — no live Reddit calls).
+    # Disambiguation: Loon/Collins need CA context or a second alias; the
+    # "Lake" inside the water's own name must not count as Lake County.
+    check("match: 'Loon Lake, Crystal Basin' -> loon-lake (second alias)",
+          match_water("Loon Lake, Crystal Basin", disambiguate=True) == "loon-lake")
+    check("match: 'Loon Lake, Minnesota' -> other (no CA context)",
+          match_water("Loon Lake, Minnesota", disambiguate=True) is None)
+    check("match: 'Collins Lake, California' -> collins-lake (explicit CA)",
+          match_water("Collins Lake, California", disambiguate=True) == "collins-lake")
+    check("match: 'Collins Lake' alone (no CA context) -> other",
+          match_water("Collins Lake", disambiguate=True) is None)
+    check("match: 'New Bullards Bar kokanee' -> new-bullards-bar",
+          match_water("New Bullards Bar kokanee", disambiguate=True) == "new-bullards-bar")
+    check("match: 'Westport bridge' -> sacramento-river-westport",
+          match_water("Westport bridge", disambiguate=True) == "sacramento-river-westport")
+    check("match: 'random pond in Ohio' -> other",
+          match_water("random pond in Ohio", disambiguate=True) is None)
+    check("match: loose mode (FishBrain) 'Loon Lake' alone -> loon-lake",
+          match_water("Loon Lake") == "loon-lake")
+
+    # Hermetic Reddit parser checks against a FIXTURE (no network).
+    _rd_fixture = [
+        {"kind": "t3", "data": {
+            "id": "fix1", "subreddit": "californiafishing",
+            "title": "Morning bite at Loon Lake, Crystal Basin",
+            "author": "fixture_angler", "created_utc": 1764000000,
+            "permalink": "/r/californiafishing/comments/fix1/x/",
+            "selftext": "Stocked browns were on."}},
+        {"kind": "t3", "data": {
+            "id": "fix2", "subreddit": "fishing",
+            "title": "Anyone know Loon Lake in Minnesota?",
+            "author": "fixture_two", "created_utc": 1764000100,
+            "permalink": "/r/fishing/comments/fix2/x/", "selftext": ""}},
+        {"kind": "t3", "data": {"id": ""}},  # unusable child
+    ]
+    _n1 = normalize_reddit_child(_rd_fixture[0])
+    _n2 = normalize_reddit_child(_rd_fixture[1])
+    _n3 = normalize_reddit_child(_rd_fixture[2])
+    check("reddit fixture: Crystal Basin post -> loon-lake",
+          _n1 is not None and _n1["matched_water"] == "loon-lake")
+    check("reddit fixture: Minnesota post -> other (disambiguated)",
+          _n2 is not None and _n2["matched_water"] is None)
+    check("reddit fixture: empty child -> None (skipped)", _n3 is None)
+    check("reddit fixture: permalink absolutized + excerpt capped",
+          _n1 is not None and _n1["permalink"].startswith("https://www.reddit.com/")
+          and _n1["sub"] == "californiafishing" and _n1["author"] == "fixture_angler")
+
+    # Hermetic FishBrain parser checks (tolerant dates, fuzzy columns).
+    _rows, _skipped = parse_fishbrain_export(
+        "Fish Species,Date Caught,WT,LBS,Spot,Comments\n"
+        "Rainbow,2026-11-20,4.5,North Bay,dawn bite\n"
+        "Kokanee,11/22/2026,1.2,Bullards Bar,\n"
+        "Salmon,Nov 23 2026,18.0,Westport,pm\n"
+    )
+    check("FB parser: fuzzy headers (Fish Species/Date Caught/WT/Spot) detected",
+          len(_rows) == 3 and _skipped == 0
+          and _rows[0]["species"] == "Rainbow" and _rows[0]["weight_lb"] == 4.5
+          and _rows[1]["date"] == "2026-11-22" and _rows[2]["date"] == "2026-11-23",
+          f"(rows={_rows!r:.200} skipped={_skipped})")
+    _rows2, _skipped2 = parse_fishbrain_export("species,date\nTrout,gibberish\n")
+    check("FB parser: unparseable date -> row skipped, counted",
+          len(_rows2) == 0 and _skipped2 == 1, f"(rows={_rows2!r} skipped={_skipped2})")
+    try:
+        parse_fishbrain_export("foo,bar\n1,2\n")
+        _bad_err = None
+    except ValueError as e:
+        _bad_err = str(e)
+    check("FB parser: unrecognized columns -> ValueError",
+          _bad_err is not None and "recognizable" in _bad_err, f"(got {_bad_err!r})")
+
+    # Synthetic CSV fixture: 5 rows — 1 deliberately bad date (skipped),
+    # 2 matching different waters, 1 more water, 1 unmatched ("Other").
+    # Dates are generated relative to today so the recency window holds
+    # whenever the suite runs; all three date FORMS are exercised.
+    _t0 = date.today()
+    _d_iso = (_t0 - timedelta(days=1)).isoformat()
+    _d_us = (_t0 - timedelta(days=2)).strftime("%m/%d/%Y")
+    _d_named = (_t0 - timedelta(days=3)).strftime("%b %d %Y")
+    fb_csv = "\n".join([
+        "species,date,weight,location,notes",
+        f'Rainbow Trout,{_d_iso},4.5,Collins Lake north bay,"good bite at dawn"',
+        f"Kokanee,{_d_us},1.2,New Bullards Bar,",
+        f"Chinook Salmon,{_d_named},18.0,Sacramento River near Westport,late afternoon",
+        "Largemouth Bass,not-a-real-date,2.1,Loon Lake,",
+        f"Trout,{(_t0 - timedelta(days=4)).isoformat()},,Some Random Pond,",
+    ]) + "\n"
+    st, imp = req_raw("POST", "/api/community/fishbrain/import", fb_csv)
+    imp = as_dict(imp)
+    check("FB import: CSV 5 rows -> 200 imported=4 skipped=1",
+          st == 200 and imp.get("imported") == 4 and imp.get("skipped") == 1,
+          f"(got {st} {imp!r:.160})")
+    csv_batch = imp.get("batch_id")
+    _by_sp = {r.get("species"): r for r in imp.get("rows", [])}
+    _rt = _by_sp.get("Rainbow Trout", {})
+    check("FB import: ISO/US/named dates normalized to ISO + weight parsed",
+          _rt.get("date") == _d_iso and _rt.get("weight_lb") == 4.5
+          and _by_sp.get("Kokanee", {}).get("date") == (_t0 - timedelta(days=2)).isoformat()
+          and _by_sp.get("Chinook Salmon", {}).get("date") == (_t0 - timedelta(days=3)).isoformat(),
+          f"(got {_rt!r:.160})")
+    check("FB import: water matching (collins / nbb / sacramento / other)",
+          _rt.get("water") == "collins-lake"
+          and _by_sp.get("Kokanee", {}).get("water") == "new-bullards-bar"
+          and _by_sp.get("Chinook Salmon", {}).get("water") == "sacramento-river-westport"
+          and _by_sp.get("Trout", {}).get("water") is None,
+          f"(waters={[r.get('water') for r in imp.get('rows', [])]!r})")
+    check("FB import: bad-date row skipped (not in rows)", "Largemouth Bass" not in _by_sp)
+
+    # JSON-format variant with fuzzy (camelCase) keys.
+    fb_json = json.dumps([
+        {"speciesName": "Kokanee",
+         "createdAt": f"{(_t0 - timedelta(days=1)).isoformat()}T09:30:00Z",
+         "weightLbs": "2.4", "spot": "Bullards Bar marina", "comments": "json variant"},
+        {"species": "Brown Trout", "date": "garbage-date", "notes": "should be skipped"},
+    ])
+    st, impj = req_raw("POST", "/api/community/fishbrain/import", fb_json, ctype="application/json")
+    impj = as_dict(impj)
+    check("FB import: JSON variant -> 200 imported=1 skipped=1",
+          st == 200 and impj.get("imported") == 1 and impj.get("skipped") == 1,
+          f"(got {st} {impj!r:.160})")
+    json_batch = impj.get("batch_id")
+    _jr = (impj.get("rows") or [{}])[0]
+    check("FB import: JSON fuzzy keys mapped (speciesName/createdAt/weightLbs/spot)",
+          _jr.get("species") == "Kokanee"
+          and _jr.get("date") == (_t0 - timedelta(days=1)).isoformat()
+          and _jr.get("weight_lb") == 2.4
+          and _jr.get("location") == "Bullards Bar marina"
+          and _jr.get("water") == "new-bullards-bar",
+          f"(got {_jr!r:.160})")
+
+    # Unified GET: both sections, recency + water filters, reddit disabled.
+    st, com = req("GET", "/api/community?days=30")
+    com = as_dict(com)
+    fb = com.get("fishbrain", {})
+    rd = com.get("reddit", {})
+    check("community GET: 200 with fishbrain{batches,rows} + reddit{enabled,...}",
+          st == 200 and "batches" in fb and "rows" in fb
+          and "enabled" in rd and "stale" in rd and "fetched_at" in rd and "posts" in rd,
+          f"(got {st} {com!r:.160})")
+
+    def _has_row(rows, species, loc_frag):
+        return any(r.get("species") == species and loc_frag in (r.get("location") or "")
+                   for r in rows)
+
+    _rows30 = fb.get("rows", [])
+    check("community GET: all 5 imported rows visible in 30d window",
+          _has_row(_rows30, "Rainbow Trout", "Collins Lake")
+          and _has_row(_rows30, "Kokanee", "New Bullards Bar")
+          and _has_row(_rows30, "Chinook Salmon", "Sacramento River")
+          and _has_row(_rows30, "Trout", "Some Random Pond")
+          and _has_row(_rows30, "Kokanee", "Bullards Bar marina"),
+          f"(n={len(_rows30)})")
+    _batch_ids = [b.get("batch_id") for b in fb.get("batches", [])]
+    check("community GET: both import batches listed",
+          csv_batch in _batch_ids and json_batch in _batch_ids, f"(batches={_batch_ids!r})")
+    check("community GET: reddit disabled (env unset) -> enabled=false, posts=[]",
+          rd.get("enabled") is False and rd.get("posts") == [] and rd.get("stale") is False,
+          f"(got {rd!r:.160})")
+
+    st, com_w = req("GET", "/api/community?water_slug=collins-lake&days=30")
+    rows_w = as_dict(com_w).get("fishbrain", {}).get("rows", []) if st == 200 else []
+    check("community GET: water filter -> only the Collins row",
+          st == 200 and len(rows_w) == 1 and rows_w[0]["species"] == "Rainbow Trout"
+          and rows_w[0]["water"] == "collins-lake",
+          f"(got {st} n={len(rows_w)})")
+    st, _ = req("GET", "/api/community?water_slug=nope&days=7")
+    check("community GET: unknown water_slug -> 404", st == 404, f"(got {st})")
+
+    # Batch undo: delete removes exactly that batch.
+    st, delr = req("DELETE", f"/api/community/fishbrain/import/{csv_batch}")
+    check("FB delete: CSV batch removed -> 200 (4 rows)",
+          st == 200 and as_dict(delr).get("deleted_rows") == 4, f"(got {st} {delr!r:.120})")
+    st, com2 = req("GET", "/api/community?days=30")
+    rows2 = as_dict(com2).get("fishbrain", {}).get("rows", [])
+    check("FB delete: CSV rows gone, JSON row remains",
+          st == 200 and not _has_row(rows2, "Rainbow Trout", "Collins Lake")
+          and not _has_row(rows2, "Chinook Salmon", "Sacramento River")
+          and _has_row(rows2, "Kokanee", "Bullards Bar marina"),
+          f"(n={len(rows2)})")
+    st, _ = req("DELETE", f"/api/community/fishbrain/import/{json_batch}")
+    check("FB delete: JSON batch removed -> 200", st == 200, f"(got {st})")
+    st, com3 = req("GET", "/api/community?days=3650")
+    fb3 = as_dict(com3).get("fishbrain", {})
+    check("FB delete: DB back to as-found (row/batch counts restored)",
+          st == 200 and len(fb3.get("rows", [])) == prior_rows
+          and len(fb3.get("batches", [])) == prior_batches,
+          f"(rows={len(fb3.get('rows', []))}/{prior_rows} batches={len(fb3.get('batches', []))}/{prior_batches})")
+    st, _ = req("DELETE", "/api/community/fishbrain/import/nope123")
+    check("FB delete: unknown batch -> 404", st == 404, f"(got {st})")
+    st, _bad = req_raw("POST", "/api/community/fishbrain/import", "foo,bar\n1,2\n")
+    check("FB import: unrecognized columns -> 400", st == 400, f"(got {st})")
+    st, _bad = req_raw("POST", "/api/community/fishbrain/import", "   ")
+    check("FB import: empty body -> 400", st == 400, f"(got {st})")
+
+    # 10. cleanup: delete catch + trip
     st, _ = req("DELETE", f"/api/catches/{catch_id}")
     check("delete catch -> 204", st == 204, f"(got {st})")
     st, _ = req("DELETE", f"/api/trips/{trip_id}")

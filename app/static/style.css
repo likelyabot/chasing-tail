@@ -100,6 +100,16 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 #gear-editor .gear-actions { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 #gear-editor .gear-actions .spacer { flex: 1; }
 #gear-error { margin: 10px 0; }
+/* community tab */
+.cm-water.active, .cm-days.active { color: var(--accent); border-color: var(--border); background: var(--panel2); }
+.cm-importbox { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.cm-importbox textarea { width: 100%; min-height: 90px; resize: vertical; }
+.cm-batch { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.cm-entry { padding: 8px 0; border-top: 1px dashed var(--border); font-size: .93rem; }
+.cm-entry:first-child { border-top: 0; }
+.cm-link { color: inherit; text-decoration: none; display: block; }
+.cm-link:hover strong { color: var(--accent); }
+.cm-muted { color: var(--dim); font-style: italic; }
 /* trip plan panel — lazy "in season + regs" on each trip card */
 .plan { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); }
 .plan summary { cursor: pointer; padding: 8px 12px; color: var(--accent); font-weight: 600; font-size: .9rem; user-select: none; }

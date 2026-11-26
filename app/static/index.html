@@ -14,6 +14,7 @@
     <button data-tab="plan">Plan</button>
     <button data-tab="weather">Weather</button>
     <button data-tab="gear">Gear</button>
+    <button data-tab="community">Community</button>
     <button data-tab="chat">Chat</button>
   </nav>
 </header>
@@ -72,6 +73,38 @@
     </div>
     <div id="gear-result"></div>
     <div id="gear-editor" hidden></div>
+  </section>
+
+  <!-- ===================== COMMUNITY ===================== -->
+  <section id="tab-community" class="tab hidden">
+    <h2>Community</h2>
+    <div class="card row" id="cm-filter">
+      <button class="ghost cm-water active" data-water="">All waters</button>
+      <button class="ghost cm-water" data-water="collins-lake">Collins Lake</button>
+      <button class="ghost cm-water" data-water="new-bullards-bar">New Bullards Bar</button>
+      <button class="ghost cm-water" data-water="loon-lake">Loon Lake</button>
+      <button class="ghost cm-water" data-water="sacramento-river-westport">Sacramento River</button>
+      <span class="spacer"></span>
+      <button class="ghost cm-days active" data-days="7">7d</button>
+      <button class="ghost cm-days" data-days="30">30d</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">FishBrain <span class="badge">mine</span></h3>
+      <div id="cm-fb-import" class="cm-importbox">
+        <textarea id="cm-fb-text" rows="5"
+          placeholder="Paste a FishBrain export (CSV or JSON) — species/date/weight/length/location/notes columns are auto-detected."></textarea>
+        <div class="row" style="margin-top:8px">
+          <button id="cm-fb-import-btn">Import</button>
+          <span id="cm-fb-summary" class="meta"></span>
+        </div>
+        <div id="cm-fb-batches"></div>
+      </div>
+      <div id="cm-fb-rows"></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Reddit <span class="meta" id="cm-rd-subs"></span> <span class="badge" id="cm-rd-badge">…</span></h3>
+      <div id="cm-rd-posts"></div>
+    </div>
   </section>
 
   <!-- ===================== CHAT ===================== -->

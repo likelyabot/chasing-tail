@@ -58,6 +58,38 @@ CREATE TABLE IF NOT EXISTS gear (
     payload    TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS fishbrain_batches (
+    batch_id     TEXT PRIMARY KEY,
+    imported_at  TEXT NOT NULL,
+    row_count    INTEGER NOT NULL,
+    source_label TEXT
+);
+CREATE TABLE IF NOT EXISTS fishbrain_rows (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id    TEXT NOT NULL REFERENCES fishbrain_batches(batch_id) ON DELETE CASCADE,
+    imported_at TEXT NOT NULL,
+    species     TEXT,
+    date        TEXT,
+    weight_lb   REAL,
+    length_in   REAL,
+    location    TEXT,
+    notes       TEXT,
+    photo_url   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fb_rows_batch ON fishbrain_rows(batch_id);
+CREATE INDEX IF NOT EXISTS idx_fb_rows_date ON fishbrain_rows(date);
+CREATE TABLE IF NOT EXISTS reddit_posts (
+    reddit_id        TEXT PRIMARY KEY,
+    sub              TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    author           TEXT,
+    created_utc      REAL NOT NULL,
+    permalink        TEXT,
+    selftext_excerpt TEXT,
+    matched_water    TEXT,
+    fetched_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reddit_created ON reddit_posts(created_utc);
 """
 
 

@@ -35,6 +35,9 @@ compose file fails fast if it's unset (LAN-only by design, no 0.0.0.0 bind).
 | `LOG_LEVEL` | `info` | Logging level |
 | `TZ` | `America/Los_Angeles` | Display timezone |
 | `CACHE_DIR` | `<db dir>/cache` | Weather/gauge response cache |
+| `REDDIT_CLIENT_ID` | *(empty)* | Reddit OAuth2 client id (free personal "script" app). Feature is **disabled** unless both `REDDIT_*` vars are set — e.g. `REDDIT_CLIENT_ID=my-client-id` |
+| `REDDIT_CLIENT_SECRET` | *(empty)* | Reddit OAuth2 client secret — e.g. `REDDIT_CLIENT_SECRET=your-secret-here` (env only, never in the repo) |
+| `REDDIT_SUBREDDITS` | `californiafishing,fishing` | Comma-separated subreddits to poll (≤4 per poll) |
 
 ## API overview
 
@@ -45,6 +48,9 @@ compose file fails fast if it's unset (LAN-only by design, no 0.0.0.0 bind).
 - `GET/POST/PATCH/DELETE /api/catches[/{id}]` — catch CRUD (nested under trips)
 - `GET/PUT/DELETE /api/gear` — tackle list (editable in UI; resets to repo defaults)
 - `GET /api/weather/{water_slug}` — NWS forecast + Open-Meteo hourly + USGS gauge + lunar phase (computed locally)
+- `GET /api/community?water_slug=&days=7` — Community tab: FishBrain imports + Reddit feed (both water/recency-filtered)
+- `POST /api/community/fishbrain/import` — paste a FishBrain CSV/JSON export (fuzzy column detection, tolerant dates; unparseable rows skipped + counted)
+- `DELETE /api/community/fishbrain/import/{batch_id}` — undo an import batch
 - `GET /api/recommend?water_slug=&date=&species=&live_weather=` — rule-based plan
 - `POST /api/chat` — **stub**: proxies to `HERMES_CHAT_ENDPOINT` if set, else "disabled"
 
@@ -68,6 +74,32 @@ Interactive docs: `http://localhost:8000/docs`.
   is served with `stale: true` and its `fetched_at` timestamp; with no cache
   at all the panel shows an explicit error instead of crashing.
 
+## Community tab (FishBrain + Reddit)
+
+- **FishBrain (manual):** the user exports his own journal/catches on his
+  phone and pastes the CSV/JSON into the Community tab. `POST
+  /api/community/fishbrain/import` detects columns fuzzily (case-insensitive,
+  punctuation-stripped variants: `species|fish|species_name`, `date|time|created`,
+  `weight|wt|lbs`, `length|inches`, `location|spot|water|area`, `notes|comments|details`,
+  `photo|image|url`…), tolerates ISO / US m/d/y / "Mon DD YYYY" dates and epoch
+  values; unparseable rows are skipped and counted, never fatal. Locations are
+  keyword-matched against the four waters + aliases (Collins Lake/Merle
+  Collins/Virginia Ranch; New Bullards Bar/Bullards Bar; Loon Lake/Crystal
+  Basin; Sacramento River/Westport/Red Bluff/Colusa); unmatched rows show
+  under "Other". Each import is a batch — `DELETE …/{batch_id}` undoes it.
+- **Reddit (optional, official API):** enabled only when `REDDIT_CLIENT_ID`
+  + `REDDIT_CLIENT_SECRET` are both set (OAuth2 client_credentials, free
+  personal "script" app). Otherwise the API reports `reddit.enabled: false`
+  and the UI shows a muted configure notice — disabled, not errored.
+  Fetch-on-request with the weather-style file cache: 15-min TTL, ≤4 feed
+  requests per poll (`/r/{sub}/hot`), 429 + Retry-After honored, Reddit down
+  ⇒ last good feed served with `stale: true`, never a 500. Posts are stored
+  in `reddit_posts` (dedupe by `reddit_id`, 30-day prune per poll) and
+  water-classified with the same alias set, plus disambiguation: "Loon Lake"
+  / "Collins Lake" only match on public posts when accompanied by CA context
+  (a county name or an explicit California/CA mention) or a second alias.
+  Secrets only ever via env vars — the repo contains no credentials.
+
 ## Recommendation engine (v1, rules)
 
 Seeded species-per-water monthly activity curves + weather modifiers
@@ -85,8 +117,11 @@ when sustained wind ≥ 10 mph or gusts ≥ 15 mph.
 Schema: `users`, `waters` (static seed), `trips`, `catches` (cascades with
 trips), `gear` (single row — user-edited tackle, seeded once from the repo
 defaults and never refreshed on boot; `DELETE /api/gear` drops it back to
-defaults). One user (Angler) is seeded on first start; anyone can create trips
-and catches. No auth in v1 — trusted LAN only.
+defaults), `fishbrain_batches` + `fishbrain_rows` (user-imported FishBrain
+exports; rows cascade-delete with their batch), `reddit_posts` (polled Reddit
+feed; dedupe by `reddit_id`, 30-day prune). One user (Angler) is seeded on
+first start; anyone can create trips and catches. No auth in v1 — trusted LAN
+only.
 
 ## Smoke test
 
@@ -97,5 +132,8 @@ python3 scripts/smoke_test.py http://localhost:8090
 ```
 
 Covers: healthz, user creation, trip+catch CRUD round-trip, live NWS weather
-for Collins Lake, the kayak gate, and the gear edit round-trip (PUT/422/
-DELETE + restore).
+for Collins Lake, the kayak gate, the gear edit round-trip (PUT/422/
+DELETE + restore), and the Community tab (FishBrain CSV/JSON import with
+fuzzy columns + tolerant dates + water matching + batch undo, unified GET
+filters, Reddit disabled path, hermetic parser/matching fixtures — no live
+Reddit calls). Leaves the DB as found.

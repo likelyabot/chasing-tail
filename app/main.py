@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import catches, chat, gear, recommend, trips, users, waters, weather
+from .routers import catches, chat, community, gear, recommend, trips, users, waters, weather
 
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
 log = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ app.include_router(trips.router)
 app.include_router(catches.router)
 app.include_router(gear.router)
 app.include_router(weather.router)
+app.include_router(community.router)
 app.include_router(recommend.router)
 app.include_router(chat.router)
 
