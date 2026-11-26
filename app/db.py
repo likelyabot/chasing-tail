@@ -90,6 +90,25 @@ CREATE TABLE IF NOT EXISTS reddit_posts (
     fetched_at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reddit_created ON reddit_posts(created_utc);
+CREATE TABLE IF NOT EXISTS photos (
+    id          TEXT PRIMARY KEY,
+    trip_id     INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+    catch_id    INTEGER REFERENCES catches(id) ON DELETE SET NULL,
+    ext         TEXT NOT NULL,
+    size_bytes  INTEGER NOT NULL,
+    created_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_photos_trip ON photos(trip_id);
+CREATE TABLE IF NOT EXISTS spots (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    water_slug  TEXT NOT NULL,
+    lat         REAL NOT NULL,
+    lon         REAL NOT NULL,
+    notes       TEXT,
+    created_utc TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_spots_water ON spots(water_slug);
 """
 
 

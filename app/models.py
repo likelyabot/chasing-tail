@@ -131,3 +131,26 @@ class GearIn(BaseModel):
     reels: list[ReelIn] = Field(max_length=50)
     lures: list[_Item] = Field(max_length=100)
     extras: list[_Item] = Field(max_length=100)
+
+
+# ---------- spots (productive-spot map) ----------
+
+class SpotIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    water_slug: str = Field(min_length=1, max_length=100)
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class SpotUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    water_slug: str | None = Field(default=None, min_length=1, max_length=100)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class SpotOut(SpotIn):
+    id: int
+    created_utc: str

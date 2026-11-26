@@ -159,4 +159,8 @@ def delete_trip(trip_id: int, conn: sqlite3.Connection = Depends(get_conn)):
     conn.commit()
     if cur.rowcount == 0:
         raise HTTPException(404, "trip not found")
+    # FK cascade dropped the photo ROWS; sweep the FILES on the data volume.
+    # Best-effort (logged inside) — a filesystem hiccup must not fail the API.
+    from ..services import photo_store
+    photo_store.sweep_trip_photos(trip_id)
     return None

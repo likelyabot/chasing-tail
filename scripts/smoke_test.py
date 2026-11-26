@@ -48,15 +48,28 @@ Verifies the acceptance criteria:
       - species->sprite mapping via /api/species-icon/<name>: every keyword
         (incl. coho/channel/blue-cat/sunfish aliases) resolves correctly,
         unrecognized names fall back to generic.png (always 200), and the
-        client-side JS table in app/static/app.js mirrors the server table
+      - client-side JS table in app/static/app.js mirrors the server table
+  13. catch photos (task t_99817b0c): multipart upload (hand-parsed, no
+      python-multipart) with magic-byte type detection (jpg/png/webp), ~10 MB
+      cap (413), optional catch association, serve-back byte-identity, delete
+      (row + file), trip-delete cascade, and the trip-card UI wiring
+      (upload button, canvas downscale, thumbnail grid, lightbox)
+  14. productive-spot map (task t_99817b0c): /api/spots CRUD (unknown water
+      -> 404, coord bounds -> 422, water filter) + Leaflet-via-CDN wiring
+      (assets, OSM tiles, offline "needs a connection" degradation,
+      click-to-add, spot list, trip-card map jump)
 Exit code 0 = all pass.
 """
+import base64
 import json
 import os
+import struct
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
+import zlib
 from datetime import date, timedelta
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -139,6 +152,82 @@ def req_bin(path, timeout=90):
             return resp.status, resp.read(), (resp.headers.get("Content-Type") or "")
     except urllib.error.HTTPError as e:
         return e.code, e.read(), (e.headers.get("Content-Type") or "")
+
+
+def req_multipart(path, files, fields=None, timeout=120):
+    """POST a multipart/form-data body using stdlib only.
+
+    (The stack bans new Python deps, so there is no multipart library — the
+    app parses these bodies by hand; this builder mirrors what browsers send.)
+    files:  [(field, filename, content_bytes, content_type), ...]
+    fields: {field: text_value}
+    Returns (status, raw_bytes, headers_dict).
+    """
+    boundary = "smoke-" + uuid.uuid4().hex
+    parts = []
+    for name, value in (fields or {}).items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n".encode()
+        )
+    for field, fname, content, ctype in files:
+        parts.append(
+            (f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
+             f'filename="{fname}"\r\nContent-Type: {ctype}\r\n\r\n').encode()
+            + content + b"\r\n"
+        )
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+    r = urllib.request.Request(
+        BASE + path, data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            return resp.status, resp.read(), dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), dict(e.headers)
+    except urllib.error.URLError as e:
+        # Connection died mid-transfer (server reset, etc.): report as a
+        # failed request (status 0) instead of crashing the whole suite.
+        return 0, str(e).encode(), {}
+
+
+def make_png(width=16, height=16):
+    """Build a real, decodable PNG entirely in the stdlib (test fixture)."""
+    def chunk(tag, payload):
+        return (struct.pack(">I", len(payload)) + tag + payload
+                + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    rows = b"".join(
+        b"\x00" + b"".join(
+            bytes(((x * 13 + y * 7) % 256, (x * 5 + y * 11) % 256, 90))
+            for x in range(width)
+        )
+        for y in range(height)
+    )
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+# Real 24x24 JPEG (gradient), generated once with Pillow and frozen here so
+# the suite itself stays stdlib-only. Exercises the jpg magic path.
+_JPEG_FIXTURE_B64 = (
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEP"
+    "ERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4e"
+    "Hh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wAARCAAYABgDASIA"
+    "AhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQA"
+    "AAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3"
+    "ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWm"
+    "p6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEA"
+    "AwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSEx"
+    "BhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElK"
+    "U1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3"
+    "uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD5703R"
+    "OnyV02m6J0+Sul03ROnyV0+m6J0+SvqsZnHmYcNZ9tqc1puidPkor0vTdE6fJRXzVXOPe3P27Ls+/"
+    "crUbpuidPkrp9N0Tp8lFFfO4zFVO5/G3DWMq6anTabonT5KKKK+aq4qpzbn7dl2Mq+xWp//2Q=="
+)
+JPEG_FIXTURE = base64.b64decode(_JPEG_FIXTURE_B64)
 
 
 def test_conditions(base):
@@ -686,6 +775,242 @@ def test_ui_wiring(base):
           ".bf-cond-item" in css_src and ".bf-cond-item .reason" in css_src
           and ".briefing-body" in css_src,
           "(briefing styles missing)")
+
+
+def test_photos(base, user_id):
+    """13. Catch photos (task t_99817b0c): upload -> serve -> delete round-trip.
+
+    Uses a THROWAWAY trip so the cascade test (trip delete sweeps photo files)
+    can't disturb the suite's main trip. Multipart bodies are built by hand
+    (req_multipart) — the app parses them by hand too (no python-multipart in
+    the stack). Storage lands on the data volume next to the DB by default.
+    """
+    st, waters = req("GET", "/api/waters")
+    collins = next(w for w in waters if w["slug"] == "collins-lake")
+
+    st, trip = req("POST", "/api/trips", {
+        "user_id": user_id, "water_id": collins["id"], "date": "2026-09-15",
+        "notes": "photo round-trip trip", "status": "completed",
+    })
+    check("photos: throwaway trip created", st == 201, f"(got {st})")
+    tid = trip["id"]
+    up_url = f"/api/trips/{tid}/photos"
+
+    png = make_png()
+    webp = b"RIFF" + struct.pack("<I", 12) + b"WEBP" + b"VP8L" + struct.pack("<I", 0)
+    gif = b"GIF89a" + b"\x01\x00\x01\x00"
+
+    # --- PNG round-trip: upload -> served back byte-identical -> delete -----
+    st, body, hdrs = req_multipart(up_url, [("file", "catch.png", png, "image/png")])
+    check("photos: PNG upload -> 201", st == 201, f"(got {st} {body[:200]!r})")
+    p = json.loads(body) if st == 201 else {}
+    check("photos: response shape (id/url/ext/size_bytes/trip_id/created_utc)",
+          all(k in p for k in ("id", "url", "ext", "size_bytes", "trip_id", "created_utc")),
+          f"(keys={sorted(p)})")
+    check("photos: type detected from magic bytes (png)", p.get("ext") == "png",
+          f"(got {p.get('ext')!r})")
+    check("photos: size_bytes matches upload", p.get("size_bytes") == len(png),
+          f"({p.get('size_bytes')} vs {len(png)})")
+    check("photos: serve URL consistent with id",
+          p.get("url") == f"/api/photos/{p.get('id')}", f"(got {p.get('url')!r})")
+
+    st, raw, ct = req_bin(p.get("url", "/api/photos/missing"))
+    check("photos: GET /api/photos/<id> -> 200", st == 200, f"(got {st})")
+    check("photos: served bytes identical to upload", raw == png,
+          f"(served {len(raw)} vs {len(png)} bytes)")
+    check("photos: content-type image/png", "image/png" in ct.lower(), f"(got {ct!r})")
+
+    # --- JPEG + WebP magic paths ---------------------------------------------
+    st, body, _ = req_multipart(up_url, [("file", "fish.jpg", JPEG_FIXTURE, "image/jpeg")])
+    j = json.loads(body) if st == 201 else {}
+    check("photos: JPEG upload -> 201 ext=jpg", st == 201 and j.get("ext") == "jpg",
+          f"(got {st} ext={j.get('ext')!r})")
+    st, raw, ct = req_bin(j.get("url", "/api/photos/missing"))
+    check("photos: JPEG served back byte-identical (content-type image/jpeg)",
+          st == 200 and raw == JPEG_FIXTURE and "image/jpeg" in ct.lower(),
+          f"(got {st} ct={ct!r} len={len(raw)})")
+    st, body, _ = req_multipart(up_url, [("file", "shot.webp", webp, "image/webp")])
+    w = json.loads(body) if st == 201 else {}
+    check("photos: WebP upload -> 201 ext=webp", st == 201 and w.get("ext") == "webp",
+          f"(got {st} ext={w.get('ext')!r})")
+
+    # --- trip photo list ------------------------------------------------------
+    st, lst = req("GET", f"/api/trips/{tid}/photos")
+    lst = lst if isinstance(lst, list) else []
+    check("photos: trip list has all 3 uploads", st == 200 and len(lst) == 3,
+          f"(got {st} n={len(lst)})")
+    check("photos: list items carry serve urls",
+          all(item.get("url", "").startswith("/api/photos/") for item in lst),
+          f"(got {[i.get('url') for i in lst]!r})")
+
+    # --- optional catch association -------------------------------------------
+    st, catch = req("POST", "/api/catches", {"trip_id": tid, "species": "rainbow trout", "count": 1})
+    cid = catch.get("id") if st == 201 else None
+    st, body, _ = req_multipart(up_url, [("file", "big.png", png, "image/png")],
+                                {"catch_id": str(cid)})
+    cp = json.loads(body) if st == 201 else {}
+    check("photos: optional catch_id association stored",
+          st == 201 and cp.get("catch_id") == cid, f"(got {st} catch_id={cp.get('catch_id')!r})")
+    st, _body, _ = req_multipart(up_url, [("file", "x.png", png, "image/png")],
+                                 {"catch_id": "999999"})
+    check("photos: bogus catch_id -> 404", st == 404, f"(got {st})")
+
+    # --- rejections ------------------------------------------------------------
+    big = b"\x89PNG\r\n\x1a\n" + b"x" * (10 * 1024 * 1024 + 1)
+    st, _body, _ = req_multipart(up_url, [("file", "huge.png", big, "image/png")])
+    check("photos: >10 MB upload -> 413", st == 413, f"(got {st})")
+    st, _body, _ = req_multipart(up_url, [("file", "anim.gif", gif, "image/gif")])
+    check("photos: GIF magic -> 400 (only jpg/png/webp)", st == 400, f"(got {st})")
+    st, _body, _ = req_multipart(up_url, [("file", "fake.png", b"not-an-image-at-all", "image/png")])
+    check("photos: .png filename with bad magic -> 400 (magic wins over name)", st == 400,
+          f"(got {st})")
+    st, _body, _ = req_multipart("/api/trips/999999/photos",
+                                 [("file", "a.png", png, "image/png")])
+    check("photos: unknown trip -> 404", st == 404, f"(got {st})")
+
+    # --- delete: row + file -----------------------------------------------------
+    victim = lst[0]["id"]
+    st, _ = req("DELETE", f"/api/photos/{victim}")
+    check("photos: DELETE -> 204", st == 204, f"(got {st})")
+    st, _raw, _ct = req_bin(f"/api/photos/{victim}")
+    check("photos: deleted photo -> 404", st == 404, f"(got {st})")
+    st, _ = req("DELETE", "/api/photos/00000000deadbeef00000000deadbeef")
+    check("photos: delete unknown id -> 404", st == 404, f"(got {st})")
+    st, lst2 = req("GET", f"/api/trips/{tid}/photos")
+    check("photos: list reflects the delete (3 left)",
+          st == 200 and isinstance(lst2, list) and len(lst2) == 3, f"(got {st} n={len(lst2)})")
+
+    # --- cascade: deleting the trip sweeps its photos (rows + files) -----------
+    st, _ = req("DELETE", f"/api/trips/{tid}")
+    check("photos: trip delete -> 204 (photo rows cascade)", st == 204, f"(got {st})")
+    st, _ = req("GET", f"/api/trips/{tid}/photos")
+    check("photos: photo list 404 after trip gone", st == 404, f"(got {st})")
+
+    # --- UI wiring: upload button, downscale, grid, lightbox --------------------
+    js_src = open(os.path.join(_REPO_ROOT, "app", "static", "app.js"), encoding="utf-8").read()
+    css_src = open(os.path.join(_REPO_ROOT, "app", "static", "style.css"), encoding="utf-8").read()
+    check("photos UI: trip card has 📷 upload button + hidden file input",
+          'data-photonew="' in js_src and 'data-photoinput="' in js_src
+          and 'accept="image/jpeg,image/png,image/webp"' in js_src,
+          "(upload wiring missing from the trip card template)")
+    check("photos UI: client-side canvas downscale (1600px cap) before upload",
+          "PHOTO_MAX_EDGE = 1600" in js_src and "preparePhoto" in js_src
+          and "createElement(\"canvas\")" in js_src and "canvas.toBlob" in js_src,
+          "(downscale path missing)")
+    check("photos UI: thumbnail grid + tap-for-full-size lightbox",
+          'data-photos="' in js_src and "photo-thumb" in js_src
+          and "openLightbox" in js_src and "renderPhotos" in js_src,
+          "(grid/lightbox missing)")
+    check("photos UI: CSS for grid + lightbox",
+          ".photo-grid" in css_src and ".photo-thumb" in css_src and ".lightbox" in css_src,
+          "(styles missing)")
+
+
+def test_spots(base):
+    """14. Productive-spot map (task t_99817b0c): spots CRUD + Leaflet wiring.
+
+    CRUD mirrors the gear/catches style (unknown water -> 404, out-of-range
+    coords -> 422). The map itself is Leaflet via CDN + OSM tiles (frontend
+    only — no container change); offline it degrades to a note + text list.
+    """
+    # --- create ----------------------------------------------------------------
+    st, spot = req("POST", "/api/spots", {
+        "name": "North Cove", "water_slug": "collins-lake",
+        "lat": 39.5681, "lon": -121.5369, "notes": "early morning bite",
+    })
+    check("spots: create -> 201", st == 201, f"(got {st} {str(spot)[:160]!r})")
+    spot = as_dict(spot)
+    check("spots: response shape (id/name/water_slug/lat/lon/notes/created_utc)",
+          all(k in spot for k in ("id", "name", "water_slug", "lat", "lon", "notes", "created_utc")),
+          f"(keys={sorted(spot)})")
+    sid = spot.get("id")
+
+    # --- list + water filter ------------------------------------------------------
+    st, all_spots = req("GET", "/api/spots")
+    all_spots = all_spots if isinstance(all_spots, list) else []
+    check("spots: in global list", st == 200 and any(s["id"] == sid for s in all_spots),
+          f"(n={len(all_spots)})")
+    st, cl = req("GET", "/api/spots?water_slug=collins-lake")
+    cl = cl if isinstance(cl, list) else []
+    check("spots: water filter includes it", st == 200 and any(s["id"] == sid for s in cl),
+          f"(n={len(cl)})")
+    st, ln = req("GET", "/api/spots?water_slug=loon-lake")
+    ln = ln if isinstance(ln, list) else []
+    check("spots: water filter excludes other waters",
+          st == 200 and all(s["id"] != sid for s in ln), f"(n={len(ln)})")
+    st, _ = req("GET", "/api/spots?water_slug=atlantic-ocean")
+    check("spots: unknown water_slug filter -> 404", st == 404, f"(got {st})")
+
+    # --- get by id -----------------------------------------------------------------
+    st, one = req("GET", f"/api/spots/{sid}")
+    check("spots: get by id -> 200 with name", st == 200 and as_dict(one).get("name") == "North Cove",
+          f"(got {st})")
+
+    # --- update ---------------------------------------------------------------------
+    st, upd = req("PUT", f"/api/spots/{sid}", {"name": "North Cove Point", "notes": "structure + dawn"})
+    upd = as_dict(upd)
+    check("spots: PUT updates name+notes", st == 200 and upd.get("name") == "North Cove Point"
+          and upd.get("notes") == "structure + dawn", f"(got {st} {upd!r:.160})")
+    check("spots: PUT preserves untouched lat/lon/water",
+          upd.get("lat") == 39.5681 and upd.get("lon") == -121.5369
+          and upd.get("water_slug") == "collins-lake", f"(got {upd!r:.160})")
+    st, _ = req("PUT", f"/api/spots/{sid}", {"lat": 999.0})
+    check("spots: out-of-range lat -> 422", st == 422, f"(got {st})")
+    st, _ = req("PUT", f"/api/spots/{sid}", {"lon": -999.0})
+    check("spots: out-of-range lon -> 422", st == 422, f"(got {st})")
+    st, _ = req("PUT", f"/api/spots/{sid}", {"water_slug": "atlantic-ocean"})
+    check("spots: PUT to unknown water -> 404", st == 404, f"(got {st})")
+
+    # --- create-edge rejections --------------------------------------------------------
+    st, _ = req("POST", "/api/spots", {"name": "X", "water_slug": "atlantic-ocean",
+                                       "lat": 10.0, "lon": 10.0})
+    check("spots: create with unknown water -> 404", st == 404, f"(got {st})")
+    st, _ = req("POST", "/api/spots", {"name": "X", "water_slug": "collins-lake",
+                                       "lat": 10.0, "lon": 999.0})
+    check("spots: create with out-of-range lon -> 422", st == 422, f"(got {st})")
+
+    # --- delete -------------------------------------------------------------------------
+    st, _ = req("DELETE", f"/api/spots/{sid}")
+    check("spots: delete -> 204", st == 204, f"(got {st})")
+    st, _ = req("GET", f"/api/spots/{sid}")
+    check("spots: deleted spot -> 404", st == 404, f"(got {st})")
+    st, _ = req("DELETE", "/api/spots/999999")
+    check("spots: delete unknown -> 404", st == 404, f"(got {st})")
+
+    # --- map assets + offline-degradation wiring ------------------------------------------
+    html_src = open(os.path.join(_REPO_ROOT, "app", "static", "index.html"), encoding="utf-8").read()
+    js_src = open(os.path.join(_REPO_ROOT, "app", "static", "app.js"), encoding="utf-8").read()
+    check("map: Leaflet CSS linked from CDN",
+          "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" in html_src,
+          "(leaflet stylesheet link missing)")
+    check("map: Leaflet JS loaded from CDN (before app.js)",
+          "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" in html_src
+          and html_src.index("leaflet.min.js") < html_src.index("/static/app.js"),
+          "(leaflet script missing or loads after app.js)")
+    check("map: OSM tile layer + attribution in app.js",
+          "tile.openstreetmap.org/{z}/{x}/{y}.png" in js_src and "OpenStreetMap" in js_src,
+          "(tile layer missing)")
+    check("map: marker icon path pinned to cdnjs via imagePath (absolute iconUrls would be double-prefixed by IconDefault._getIconUrl)",
+          "LEAFLET_IMG_BASE = \"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/\"" in js_src
+          and "imagePath: LEAFLET_IMG_BASE" in js_src,
+          "(marker icon path pinning missing)")
+    check("map: offline fallback — 'Map needs a connection' note + text spot list",
+          "Map needs a connection" in js_src and "typeof L" in js_src
+          and 'id="mp-list"' in html_src,
+          "(offline degradation path missing)")
+    check("map: tile-failure chip + watchdog (tiles unavailable note)",
+          "mp-tilechip" in js_src and "tileerror" in js_src and "watchdog" in js_src,
+          "(tile degradation path missing)")
+    check("map: click-to-add spot (prompts -> POST /api/spots)",
+          'id="mp-add"' in html_src and "onMapClick" in js_src
+          and 'data-tab="map"' in html_src,
+          "(add-spot wiring missing)")
+    check("map: spot list rows with edit/delete + popup content",
+          "data-editspot" in js_src and "data-delspot" in js_src and "bindPopup" in js_src,
+          "(spot list/popup wiring missing)")
+    check("map: trip card jumps to the water's map view",
+          'data-openmap="' in js_src and "openMapForWater" in js_src,
+          "(trip-card map button missing)")
 
 
 def main():
@@ -1258,6 +1583,12 @@ def main():
     # 13. trip briefing (task t_de445f02): consolidated plan + conditions + gear.
     test_briefing(BASE, user_id)
     test_ui_wiring(BASE)
+
+    # 14. catch photos (task t_99817b0c): upload/serve/delete round-trip.
+    test_photos(BASE, user_id)
+
+    # 15. productive-spot map (task t_99817b0c): spots CRUD + Leaflet wiring.
+    test_spots(BASE)
 
     # 10. cleanup: delete catch + trip
     st, _ = req("DELETE", f"/api/catches/{catch_id}")

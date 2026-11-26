@@ -17,6 +17,15 @@ TZ = os.environ.get("TZ", "America/Los_Angeles")
 # Where fetched weather/gauge responses are cached (next to the DB by default).
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", str(Path(DATABASE_PATH).parent / "cache")))
 
+# Catch-photo storage. Default sits NEXT TO THE DB on the same data volume
+# (compose mounts the fishing_app_data named volume at /app/data) so uploads
+# survive container recreation with the same volume. Override only for local
+# dev pointing DATABASE_PATH somewhere unusual.
+PHOTO_DIR = Path(os.environ.get("PHOTO_DIR", str(Path(DATABASE_PATH).parent / "photos")))
+
+# Upload policy for POST /api/trips/<id>/photos.
+PHOTO_MAX_BYTES = 10 * 1024 * 1024  # ~10 MB hard cap (413 above it)
+
 # Upstream fetch policy.
 UPSTREAM_TIMEOUT_S = float(os.environ.get("UPSTREAM_TIMEOUT_S", "20"))
 USER_AGENT = "chasing-tail/0.1 (LAN trip planner; contact: likelyabot@users.noreply.github.com)"

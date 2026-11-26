@@ -14,6 +14,8 @@ $$("#tabs button").forEach((btn) =>
     btn.classList.add("active");
     $$(".tab").forEach((t) => t.classList.add("hidden"));
     $("#tab-" + btn.dataset.tab).classList.remove("hidden");
+    if (btn.dataset.tab === "plan") loadPlan();
+    if (btn.dataset.tab === "map") loadMapView();
     if (btn.dataset.tab === "weather") loadWeather();
     if (btn.dataset.tab === "gear") loadGear();
     if (btn.dataset.tab === "community") loadCommunity();
@@ -260,6 +262,7 @@ async function loadTrips() {
       <div class="when">${esc(t.date)} · ${esc(t.user_name)}${t.target_species ? " · targeting " + esc(t.target_species) : ""}</div>
       ${t.notes ? `<div class="meta">${esc(t.notes)}</div>` : ""}
       <div class="catches" data-catches="${t.id}"></div>
+      <div class="photo-grid" data-photos="${t.id}" hidden></div>
       <div class="inline-form" hidden data-addform="${t.id}">
         <input placeholder="species" data-f="species" required>
         <input placeholder="count" data-f="count" type="number" min="1" value="1">
@@ -277,11 +280,15 @@ async function loadTrips() {
       </details>
       <div class="row" style="margin-top:10px">
         <button class="ghost" data-togglecatch="${t.id}">+ catch</button>
+        <button class="ghost" data-photonew="${t.id}" title="Add catch photos (auto-downscaled)">📷 photos</button>
+        <button class="ghost" data-openmap="${esc(t.water_slug || "")}" title="Open the spot map for this water">📍 map</button>
         <button class="ghost" data-edittrip="${t.id}">edit</button>
         <button class="danger" data-deltrip="${t.id}">delete</button>
       </div>
+      <input type="file" accept="image/jpeg,image/png,image/webp" multiple hidden data-photoinput="${t.id}">
     </div>`).join("");
   for (const t of trips) renderCatches(t.id);
+  for (const t of trips) renderPhotos(t.id);
 }
 
 async function renderCatches(tripId) {
@@ -299,6 +306,11 @@ async function renderCatches(tripId) {
 }
 
 $("#trip-list").addEventListener("click", async (e) => {
+  const thumb = e.target.closest("[data-phoview]");
+  if (thumb) {
+    openLightbox(thumb.dataset.phoview, thumb.dataset.photoid, thumb.dataset.tripid);
+    return;
+  }
   const t = e.target.closest("button");
   if (!t) return;
   if (t.dataset.togglecatch) {
@@ -329,6 +341,11 @@ $("#trip-list").addEventListener("click", async (e) => {
         await loadTrips();
       } catch (err) { alert("Failed: " + err.message); }
     }
+  } else if (t.dataset.photonew) {
+    const inp = $(`[data-photoinput="${t.dataset.photonew}"]`);
+    if (inp) inp.click();
+  } else if (t.dataset.openmap) {
+    openMapForWater(t.dataset.openmap);
   } else if (t.dataset.edittrip) {
     try {
       const trip = (await api(`/api/trips/${t.dataset.edittrip}`));
@@ -612,6 +629,363 @@ $("#trip-form").addEventListener("submit", async (e) => {
     $("#tf-species").value = ""; $("#tf-notes").value = "";
     await loadTrips();
   } catch (err) { alert("Failed: " + err.message); }
+});
+
+// Photo uploads: hidden <input type=file> per trip card (opened by the 📷
+// button). Files are downscaled client-side (canvas, ≤1600px longest edge)
+// before the multipart POST, keeping storage on the data volume sane.
+$("#trip-list").addEventListener("change", async (e) => {
+  const inp = e.target.closest("[data-photoinput]");
+  if (!inp) return;
+  const files = Array.from(inp.files || []);
+  inp.value = "";
+  if (!files.length) return;
+  await uploadPhotos(parseInt(inp.dataset.photoinput, 10), files);
+});
+
+// ============================================================================
+// Catch photos — grid, downscale, upload, lightbox
+// ============================================================================
+const PHOTO_MAX_EDGE = 1600; // px, longest edge after client-side downscale
+
+/** Prepare one file for upload: downscale big images via canvas; pass small
+ *  originals through untouched (keeps png/webp lossless). */
+function preparePhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const longest = Math.max(img.naturalWidth, img.naturalHeight);
+      if (longest <= PHOTO_MAX_EDGE && file.size <= 1.5 * 1024 * 1024) {
+        URL.revokeObjectURL(url);
+        resolve(file);
+        return;
+      }
+      const scale = PHOTO_MAX_EDGE / longest;
+      const w = Math.max(1, Math.round(img.naturalWidth * scale));
+      const h = Math.max(1, Math.round(img.naturalHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((blob) => {
+        if (!blob) reject(new Error("could not re-encode image"));
+        else resolve(blob);
+      }, "image/jpeg", 0.85);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("unreadable image")); };
+    img.src = url;
+  });
+}
+
+function photoFileName(file, blob) {
+  if (blob === file) return file.name || "photo.jpg";
+  return (file.name || "photo").replace(/\.[^.]*$/, "") + ".jpg";
+}
+
+async function uploadPhotos(tripId, files) {
+  let ok = 0;
+  for (const file of files) {
+    try {
+      const blob = await preparePhoto(file);
+      const fd = new FormData();
+      fd.append("file", blob, photoFileName(file, blob));
+      const r = await fetch(`/api/trips/${tripId}/photos`, { method: "POST", body: fd });
+      if (!r.ok) {
+        let detail = r.statusText;
+        try {
+          const b = await r.json();
+          if (typeof b.detail === "string") detail = b.detail;
+        } catch { /* keep statusText */ }
+        throw new Error(detail);
+      }
+      ok++;
+    } catch (err) {
+      alert(`Photo "${file.name}" failed: ${err.message}`);
+    }
+  }
+  if (ok) await renderPhotos(tripId);
+}
+
+async function renderPhotos(tripId) {
+  const box = $(`[data-photos="${tripId}"]`);
+  if (!box) return;
+  let photos = [];
+  try {
+    photos = await api(`/api/trips/${tripId}/photos`);
+  } catch { return; } // grid stays empty; never break the trip list
+  box.innerHTML = photos.length
+    ? photos.map((p) =>
+        `<img class="photo-thumb" src="${esc(p.url)}" loading="lazy" alt="catch photo"
+           data-phoview="${esc(p.url)}" data-photoid="${esc(p.id)}" data-tripid="${tripId}">`
+      ).join("")
+    : "";
+  box.hidden = !photos.length;
+}
+
+function openLightbox(url, photoId, tripId) {
+  let ov = $("#lightbox");
+  if (!ov) {
+    ov = document.createElement("div");
+    ov.id = "lightbox";
+    ov.className = "lightbox hidden";
+    ov.innerHTML = `
+      <div class="lightbox-inner">
+        <img id="lightbox-img" alt="catch photo">
+        <div class="lightbox-bar">
+          <span class="meta">esc or click outside to close</span>
+          <span class="spacer" style="flex:1"></span>
+          <button id="lightbox-del" class="danger">delete</button>
+          <button id="lightbox-close" class="ghost">close</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    ov.addEventListener("click", (e) => { if (e.target === ov) closeLightbox(); });
+    $("#lightbox-close").addEventListener("click", closeLightbox);
+    $("#lightbox-del").addEventListener("click", async () => {
+      const img = $("#lightbox-img");
+      const id = img.dataset.photoid;
+      const tid = img.dataset.tripid;
+      if (!id || !confirm("Delete this photo?")) return;
+      try {
+        await api(`/api/photos/${id}`, { method: "DELETE" });
+        closeLightbox();
+        if (tid) renderPhotos(parseInt(tid, 10));
+      } catch (err) { alert("Failed: " + err.message); }
+    });
+  }
+  const img = $("#lightbox-img");
+  img.src = url;
+  img.dataset.photoid = photoId || "";
+  img.dataset.tripid = tripId || "";
+  ov.classList.remove("hidden");
+}
+
+function closeLightbox() {
+  const ov = $("#lightbox");
+  if (!ov) return;
+  ov.classList.add("hidden");
+  const img = $("#lightbox-img");
+  if (img) img.removeAttribute("src");
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeLightbox();
+});
+
+// ============================================================================
+// Productive-spot map — Leaflet (CDN) + OSM tiles
+// Offline posture: if the CDN script fails to load (typeof L === "undefined")
+// or tiles can't be fetched, the map degrades to a note + the text spot list
+// below it. The app never blocks on the map.
+// ============================================================================
+const LEAFLET_IMG_BASE = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/";
+const MAP = { map: null, water: null, adding: false, markers: [], tilesOk: 0, watchdog: null };
+
+function mapWater() {
+  return WATERS.find((w) => w.slug === $("#mp-water").value) || null;
+}
+
+function mapAvailable() {
+  return typeof L !== "undefined";
+}
+
+function setMapNote(html) {
+  const el = $("#mp-note");
+  if (!el) return;
+  el.innerHTML = html;
+  el.hidden = !html;
+}
+
+function setTilesNote(unavailable) {
+  let chip = $("#mp-tilechip");
+  if (unavailable) {
+    if (!chip) {
+      chip = document.createElement("div");
+      chip.id = "mp-tilechip";
+      chip.className = "map-tilechip";
+      chip.textContent = "tiles unavailable — offline? spots still work";
+      $("#mp-map").appendChild(chip);
+    }
+  } else if (chip) {
+    chip.remove();
+  }
+}
+
+function initMapIfNeeded() {
+  if (MAP.map) return;
+  const w = mapWater() || WATERS[0];
+  const center = w ? [w.lat, w.lon] : [39.0, -121.5];
+  const map = L.map($("#mp-map")).setView(center, 11);
+  // Pin the icon directory explicitly (documented `imagePath` option).
+  // Do NOT set absolute iconUrl values here: IconDefault._getIconUrl()
+  // PREPENDS imagePath to options.iconUrl, and marker icon instances
+  // inherit options from this prototype — absolute URLs would be
+  // double-prefixed (imagePath + absoluteUrl) and 404.
+  L.Icon.Default.mergeOptions({ imagePath: LEAFLET_IMG_BASE });
+  const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  });
+  tiles.on("load", () => {
+    MAP.tilesOk++;
+    if (MAP.watchdog) { clearTimeout(MAP.watchdog); MAP.watchdog = null; }
+    setTilesNote(false);
+  });
+  tiles.on("tileerror", () => setTilesNote(true));
+  tiles.addTo(map);
+  map.on("click", onMapClick);
+  MAP.map = map;
+  // Watchdog: no tile within 8s ⇒ assume offline tiles.
+  MAP.watchdog = setTimeout(() => { if (!MAP.tilesOk) setTilesNote(true); }, 8000);
+}
+
+async function loadMapView() {
+  if (!$("#mp-water").options.length) {
+    fillSelect("#mp-water", WATERS.map((w) => [w.slug, w.name]));
+  }
+  const w = mapWater();
+  MAP.water = w ? w.slug : null;
+  if (!mapAvailable()) {
+    setMapNote("🗺 <b>Map needs a connection</b> — Leaflet (CDN) didn’t load, so no tiles or markers. Your spots are listed below.");
+    $("#mp-map").style.visibility = "hidden";
+    await renderMapSpots();
+    return;
+  }
+  $("#mp-map").style.visibility = "";
+  setMapNote("");
+  initMapIfNeeded();
+  await renderMapSpots();
+  if (MAP.map) MAP.map.invalidateSize(); // container was hidden until now
+}
+
+async function renderMapSpots() {
+  const w = mapWater();
+  const meta = $("#mp-meta");
+  if (!w) {
+    meta.textContent = "pick a water";
+    return;
+  }
+  let spots = [];
+  try {
+    spots = await api(`/api/spots?water_slug=${encodeURIComponent(w.slug)}`);
+  } catch (err) {
+    meta.textContent = "spot list failed: " + err.message;
+    return;
+  }
+  meta.textContent = `${spots.length} spot${spots.length === 1 ? "" : "s"}`;
+  if (mapAvailable() && MAP.map) {
+    for (const m of MAP.markers) m.remove();
+    MAP.markers = [];
+    const bounds = [];
+    for (const s of spots) {
+      const mk = L.marker([s.lat, s.lon]).addTo(MAP.map).bindPopup(
+        `<b>${esc(s.name)}</b>${s.notes ? "<br>" + esc(s.notes) : ""}<br>` +
+        `<span style="opacity:.7">${s.lat}, ${s.lon}</span>`
+      );
+      MAP.markers.push(mk);
+      bounds.push([s.lat, s.lon]);
+    }
+    if (bounds.length) {
+      // maxZoom: fitBounds on a SINGLE point would zoom to the layer max
+      // (~300m view) — cap it so one spot still shows lake-scale context.
+      MAP.map.fitBounds(L.latLngBounds(bounds).pad(0.3), { maxZoom: 14 });
+    }
+    else MAP.map.setView([w.lat, w.lon], 12);
+  }
+  // Text list — always rendered; this IS the offline fallback surface.
+  $("#mp-list").innerHTML = spots.length
+    ? `<div class="card"><h3 style="margin-top:0">${esc(w.name)} — spots</h3>` +
+      spots.map((s) => `<div class="spot-row">
+        <span class="pin">📍</span>
+        <span class="grow"><strong>${esc(s.name)}</strong> <span class="meta">${s.lat}, ${s.lon}</span>${
+          s.notes ? `<div class="meta">${esc(s.notes)}</div>` : ""
+        }</span>
+        <button class="ghost" data-editspot="${s.id}" style="padding:3px 10px">edit</button>
+        <button class="danger" data-delspot="${s.id}" style="padding:3px 10px">✕</button>
+      </div>`).join("") + `</div>`
+    : `<div class="card meta">No spots yet for ${esc(w.name)} — hit “＋ add spot (click map)” and click where the fish are.</div>`;
+}
+
+function setMapAdding(on) {
+  MAP.adding = on;
+  const btn = $("#mp-add");
+  btn.textContent = on ? "✓ click the map to drop it…" : "＋ add spot (click map)";
+  btn.classList.toggle("active", on);
+  if (MAP.map) MAP.map.getContainer().style.cursor = on ? "crosshair" : "";
+}
+
+function onMapClick(e) {
+  if (!MAP.adding) return;
+  const lat = +e.latlng.lat.toFixed(5);
+  const lon = +e.latlng.lng.toFixed(5);
+  const name = prompt("Spot name:", "");
+  if (name === null || !name.trim()) return;
+  const notesRaw = prompt("Notes (optional):", "") || "";
+  addSpotAt(lat, lon, name.trim(), notesRaw.trim() || null);
+}
+
+async function addSpotAt(lat, lon, name, notes) {
+  try {
+    await api("/api/spots", {
+      method: "POST",
+      body: JSON.stringify({ name, water_slug: MAP.water, lat, lon, notes }),
+    });
+    setMapAdding(false);
+    await renderMapSpots();
+  } catch (err) { alert("Failed: " + err.message); }
+}
+
+function openMapForWater(slug) {
+  if (slug) {
+    const sel = $("#mp-water");
+    if (sel && [...sel.options].some((o) => o.value === slug)) sel.value = slug;
+  }
+  const btn = $('#tabs button[data-tab="map"]');
+  if (btn) btn.click(); // tab handler runs loadMapView()
+}
+
+$("#mp-add").addEventListener("click", () => {
+  if (!mapAvailable()) {
+    setMapNote("🗺 <b>Map needs a connection</b> — click-to-add needs the map to load. Spots can still be edited in the list below.");
+    return;
+  }
+  setMapAdding(!MAP.adding);
+});
+
+$("#mp-water").addEventListener("change", () => {
+  setMapAdding(false);
+  loadMapView();
+});
+
+$("#mp-list").addEventListener("click", async (e) => {
+  const t = e.target.closest("button");
+  if (!t) return;
+  if (t.dataset.editspot) {
+    let spots = [];
+    try {
+      spots = await api(`/api/spots?water_slug=${encodeURIComponent(MAP.water || "")}`);
+    } catch { return; }
+    const s = spots.find((x) => x.id === parseInt(t.dataset.editspot, 10));
+    if (!s) return;
+    const name = prompt("Spot name:", s.name);
+    if (name === null || !name.trim()) return;
+    const notes = prompt("Notes:", s.notes || "") || "";
+    try {
+      await api(`/api/spots/${s.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ name: name.trim(), notes: notes || null }),
+      });
+      await renderMapSpots();
+    } catch (err) { alert("Failed: " + err.message); }
+  } else if (t.dataset.delspot) {
+    if (!confirm("Delete this spot?")) return;
+    try {
+      await api(`/api/spots/${t.dataset.delspot}`, { method: "DELETE" });
+      await renderMapSpots();
+    } catch (err) { alert("Failed: " + err.message); }
+  }
 });
 
 // ---------- plan ----------

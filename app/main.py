@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import catches, chat, community, conditions, gear, recommend, trips, users, waters, weather
+from .routers import catches, chat, community, conditions, gear, photos, recommend, spots, trips, users, waters, weather
 from .services import species_icons
 
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
@@ -25,6 +25,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # Photo storage lives on the data volume next to the DB; make sure the
+    # dir exists (best-effort — a read-only mount just disables uploads).
+    try:
+        config.PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        log.warning("cannot create photo dir %s — uploads will fail with a clear error",
+                    config.PHOTO_DIR)
     log.info("database ready at %s (tz=%s, chat_endpoint=%s)",
              config.DATABASE_PATH, config.TZ,
              "set" if config.HERMES_CHAT_ENDPOINT else "unset")
@@ -55,6 +62,8 @@ app.include_router(waters.router)
 app.include_router(trips.router)
 app.include_router(catches.router)
 app.include_router(gear.router)
+app.include_router(photos.router)
+app.include_router(spots.router)
 app.include_router(weather.router)
 app.include_router(conditions.router)
 app.include_router(community.router)

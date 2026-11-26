@@ -6,6 +6,10 @@
 <title>Chasing Tail(s) — trip planner</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<!-- Leaflet (map tab) via CDN — frontend-only, no build step. If the CDN is
+     unreachable the app.js map code degrades to a "needs a connection" note
+     + a text spot list, so a missing stylesheet can never break the SPA. -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -14,6 +18,7 @@
   <nav id="tabs">
     <button data-tab="trips" class="active">Trips</button>
     <button data-tab="plan">Plan</button>
+    <button data-tab="map">Map</button>
     <button data-tab="weather">Weather</button>
     <button data-tab="gear">Gear</button>
     <button data-tab="community">Community</button>
@@ -54,6 +59,20 @@
       <div class="wide"><button type="submit">Suggest</button></div>
     </form>
     <div id="plan-result"></div>
+  </section>
+
+  <!-- ===================== MAP (productive spots) ===================== -->
+  <section id="tab-map" class="tab hidden">
+    <h2>Productive spots</h2>
+    <div class="card row">
+      <label>Water <select id="mp-water"></select></label>
+      <button id="mp-add" class="ghost">＋ add spot (click map)</button>
+      <span class="spacer"></span>
+      <span id="mp-meta" class="meta"></span>
+    </div>
+    <div id="mp-note" class="map-note" hidden></div>
+    <div id="mp-map" class="map-box"></div>
+    <div id="mp-list"></div>
   </section>
 
   <!-- ===================== WEATHER ===================== -->
@@ -122,6 +141,10 @@
     </div>
   </section>
 </main>
+<!-- Leaflet BEFORE app.js: the map tab checks `typeof L === "undefined"` at
+     render time, so a failed CDN load simply flips the map to its offline
+     text-list fallback instead of throwing. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
