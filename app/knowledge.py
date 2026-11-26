@@ -478,6 +478,25 @@ WATER_CONTEXT = {
 }
 
 # ---------------------------------------------------------------------------
+# Machine-readable stocking dates — a strict SUBSET of the STOCKING narratives
+# above (drives the "Stocking day tomorrow" condition alert). Dates are taken
+# verbatim from the seeded narratives; no invented dates. Waters without
+# dated programs get an empty list (the alert simply never fires for them).
+# ---------------------------------------------------------------------------
+STOCKING_DATES = {
+    # Private-operator weekly plants, documented in STOCKING (dossier §3):
+    # "Recent plants: Nov 2 (2,000 lb), Nov 9 (1,500 lb), Nov 16 (1,000 lb),
+    #  Nov 23 (2,000 lb)". Future Dec dates are "not yet announced" — not seeded.
+    "collins-lake": ["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23"],
+    # Annual rainbow program (Oct–Mar) — no fixed calendar dates published.
+    "new-bullards-bar": [],
+    # No CDFW stocking in the past 13 months (verified) — nothing to match.
+    "loon-lake": [],
+    # Wild fishery — no stocking program.
+    "sacramento-river-westport": [],
+}
+
+# ---------------------------------------------------------------------------
 # Species activity heuristics (0–3) per water per calendar month (Jan–Dec).
 # Sacramento chinook curve corrected 2026-11-23: season is Nov 1–Dec 31 in
 # the Sec. 7.40(80) zone (verified regs), so Nov/Dec are prime; October is

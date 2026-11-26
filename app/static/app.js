@@ -64,6 +64,115 @@ function fmtTs(iso) {
   catch { return iso; }
 }
 
+// =============================================================================
+// Live conditions: USGS headline + barometer + dismissible alerts
+// (GET /api/conditions/<slug>; server-side cached 15–30 min per upstream).
+// =============================================================================
+const condCache = {}; // slug -> {ts, data} — short client-side memo
+async function getConditions(slug, ttlMs = 60000) {
+  const c = condCache[slug];
+  if (c && Date.now() - c.ts < ttlMs) return c.data;
+  const data = await api(`/api/conditions/${encodeURIComponent(slug)}`);
+  condCache[slug] = { ts: Date.now(), data };
+  return data;
+}
+
+// Dismissals persist per water as "key:signature" — while a condition
+// persists its signature is constant, so a dismissed alert stays dismissed;
+// a materially changed condition gets a new signature and re-fires.
+const DISMISS_KEY = "ct_dismissed_alerts_v1";
+function loadDismissed() {
+  try { return JSON.parse(localStorage.getItem(DISMISS_KEY)) || {}; } catch { return {}; }
+}
+function saveDismissed(d) {
+  try { localStorage.setItem(DISMISS_KEY, JSON.stringify(d)); } catch { /* private mode */ }
+}
+function dismissAlert(water, key, signature) {
+  const d = loadDismissed();
+  d[water] = d[water] || [];
+  const sig = `${key}:${signature}`;
+  if (!d[water].includes(sig)) d[water].push(sig);
+  if (d[water].length > 100) d[water] = d[water].slice(-100); // bound growth
+  saveDismissed(d);
+}
+function alertVisible(a, water) {
+  const mine = loadDismissed()[water] || [];
+  return !mine.includes(`${a.key}:${a.signature}`);
+}
+// One delegated listener handles every dismiss button (dashboard, weather
+// panel, trip plan panels) — the enclosing strip is removed on dismiss.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-dismissalert]");
+  if (!btn) return;
+  const [water, key, sig] = (btn.getAttribute("data-dismissalert") || "").split("|");
+  if (water && key && sig) dismissAlert(water, key, sig);
+  const strip = btn.closest(".alert-strip");
+  if (strip) strip.remove();
+});
+
+function fmtNum(n) {
+  return Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+function fmtAge(h) {
+  if (h < 1) return "updated <1h ago";
+  if (h < 48) return `updated ${Math.round(h)}h ago`;
+  return `updated ${Math.round(h / 24)}d ago`;
+}
+function usgsLine(u) {
+  if (!u) return null;
+  if (u.status === "no_recent_reading") return `${esc(u.label)}: no recent USGS reading`;
+  if (u.status === "no_data") return `${esc(u.label)}: USGS unavailable — no live or cached data`;
+  const bits = [];
+  if (u.stage_ft != null) bits.push(`pool ${fmtNum(u.stage_ft)} ft`);
+  if (u.flow_cfs != null) bits.push(`${fmtNum(u.flow_cfs)} cfs`);
+  if (u.temp_f != null) bits.push(`${fmtNum(u.temp_f)}°F`);
+  let line = esc(u.label) + (bits.length ? " " + bits.join(" · ") : " (no reading in window)");
+  if (u.qualifiers) line += ` [${esc(u.qualifiers)}]`;
+  if (u.age_hours != null) line += ` · ${fmtAge(u.age_hours)}`;
+  if (u.stale) line += ` <span class="stale-flag">stale</span>`;
+  return line;
+}
+function pressureLine(p) {
+  if (!p) return null;
+  const d = p.delta_hpa >= 0 ? `+${p.delta_hpa}` : String(p.delta_hpa);
+  return `Pressure ${Number(p.inhg).toFixed(2)} inHg (${p.hpa} hPa) · ${esc(p.trend)}` +
+    (p.window_hours ? ` (${d} hPa / ${p.window_hours}h)` : "");
+}
+function alertsChipHtml(a, water, waterLabel) {
+  return `<span class="alert-chip sev-${esc(a.severity)}">` +
+    (waterLabel ? `<b>${esc(waterLabel)}</b>` : "") +
+    `${esc(a.message)} ` +
+    `<button class="alert-x" data-dismissalert="${esc(water)}|${esc(a.key)}|${esc(a.signature)}" aria-label="dismiss alert">×</button>` +
+    `</span>`;
+}
+function alertsStripHtml(water, alerts, waterLabel) {
+  const vis = (alerts || []).filter((a) => alertVisible(a, water));
+  if (!vis.length) return "";
+  return `<div class="alert-strip">${waterLabel ? `<span class="alert-title">⚠ Conditions</span>` : ""}` +
+    vis.map((a) => alertsChipHtml(a, water, waterLabel)).join("") + `</div>`;
+}
+
+// Dashboard strip: alerts across ALL waters (non-critical; failures ignored).
+async function loadDashAlerts() {
+  const el = $("#dash-alerts");
+  if (!el) return;
+  try {
+    const settled = await Promise.all(WATERS.map(async (w) => {
+      try { return [w, await getConditions(w.slug)]; } catch { return [w, null]; }
+    }));
+    const chips = [];
+    for (const [w, d] of settled) {
+      if (!d) continue;
+      for (const a of d.alerts || []) {
+        if (!alertVisible(a, w.slug)) continue;
+        chips.push(alertsChipHtml(a, w.slug, w.name));
+      }
+    }
+    el.innerHTML = chips.length ? `<span class="alert-title">⚠ Conditions</span>${chips.join("")}` : "";
+    el.hidden = !chips.length;
+  } catch { /* dashboard alerts are non-critical */ }
+}
+
 // ---------- boot ----------
 async function boot() {
   [USERS, WATERS] = await Promise.all([api("/api/users"), api("/api/waters")]);
@@ -75,6 +184,8 @@ async function boot() {
   $("#tf-date").value = today;
   $("#pf-date").value = today;
   await loadTrips();
+  loadDashAlerts();                       // non-blocking: dashboard alerts strip
+  setInterval(loadDashAlerts, 5 * 60 * 1000); // refresh; server caches dominate
 }
 
 function fillSelect(sel, pairs) {
@@ -257,6 +368,12 @@ async function loadPlanFor(body) {
     const p = await api("/api/recommend?" + q.toString());
     PLAN_CACHE.set(key, p);
     renderPlanBody(body, p);
+    // Lazy live-conditions alerts strip (best-effort; server-cached).
+    try {
+      const cd = await getConditions(body.dataset.water);
+      const strip = alertsStripHtml(body.dataset.water, cd && cd.alerts, null);
+      if (strip) body.insertAdjacentHTML("afterbegin", strip);
+    } catch { /* non-critical */ }
   } catch (err) {
     body.dataset.state = "error";
     body.innerHTML = `<div class="err">Plan failed: ${esc(err.message)} ` +
@@ -334,6 +451,16 @@ $("#plan-form").addEventListener("submit", async (e) => {
         <div class="meta">Engine: ${esc(p.engine)} · live weather: ${p.weather_live ? "yes" : "no"}</div>
       </div>
       ${planContextHtml(p)}`;
+    // Dismissible live-conditions alerts strip atop the plan (best-effort).
+    if (gen === planGeneration) {
+      try {
+        const cd = await getConditions($("#pf-water").value);
+        if (gen === planGeneration && cd) {
+          const strip = alertsStripHtml($("#pf-water").value, cd.alerts, null);
+          if (strip) box.insertAdjacentHTML("afterbegin", strip);
+        }
+      } catch { /* non-critical */ }
+    }
   } catch (err) {
     box.innerHTML = `<div class="card err">Planning failed: ${esc(err.message)}</div>`;
   }
@@ -522,6 +649,31 @@ async function loadWeather() {
     }
 
     box.innerHTML = nwsHtml + omHtml + usgsHtml;
+    // Live conditions card (USGS IV headline + barometer + alerts): separate
+    // endpoint, server-cached; best-effort — never blocks the main panel.
+    if (gen === wfGeneration) {
+      try {
+        const cd = await getConditions(slug);
+        if (gen !== wfGeneration) return; // superseded
+        if (cd) {
+          const lines = [];
+          if (cd.usgs) {
+            const l1 = usgsLine(cd.usgs);
+            if (l1) lines.push(`<div class="cond-line">${l1}</div>`);
+            if (cd.usgs.secondary) {
+              const l2 = usgsLine(cd.usgs.secondary);
+              if (l2) lines.push(`<div class="cond-line">${l2}</div>`);
+            }
+          }
+          const pl = pressureLine(cd.pressure);
+          if (pl) lines.push(`<div class="cond-line pressure">${esc(pl)}</div>`);
+          const strip = alertsStripHtml(slug, cd.alerts, null);
+          box.insertAdjacentHTML("afterbegin",
+            `<div class="card"><h3 style="margin-top:0">Live conditions</h3>${lines.join("")}${strip}` +
+            `<div class="meta">USGS NWIS instant values + Open-Meteo barometer — cached 15–30 min server-side.</div></div>`);
+        }
+      } catch { /* conditions are best-effort */ }
+    }
   } catch (err) {
     if (gen !== wfGeneration) return;
     box.innerHTML = `<div class="card err">Weather failed: ${esc(err.message)}</div>`;

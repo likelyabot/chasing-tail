@@ -102,10 +102,14 @@ def _gauge_delta(usgs: dict | None) -> float | None:
     return None
 
 
-def weather_modifiers(wx: dict | None, usgs: dict | None) -> list[str]:
+def weather_modifiers(wx: dict | None, usgs: dict | None,
+                      usgs_live: dict | None = None) -> list[str]:
     """Translate numeric weather into fishing advice. wx = open_meteo payload
     (hourly, °F/mph). Defensive: nulls are filtered, averages divide by the
-    actual sample count, missing sources simply contribute no notes."""
+    actual sample count, missing sources simply contribute no notes.
+
+    usgs_live = the NEW USGS IV headline block (services.usgs.water_usgs) —
+    feeds SOFT notes only (see the soft-modifier block below)."""
     mods: list[str] = []
     if not wx or "hourly" not in wx:
         mods.append("No live weather — using seasonal patterns only.")
@@ -172,6 +176,51 @@ def weather_modifiers(wx: dict | None, usgs: dict | None) -> list[str]:
                 f"Water dropping (≈{d:+.1f} ft): fish deeper structure; "
                 "holding fish concentrate near the dam/outlet."
             )
+
+    # ---- SOFT live-condition modifiers (notes only; no gating, no wx_fit) ----
+    # Heuristics, deliberately conservative, tuned for the four CA waters:
+    #  * Falling barometer: classic pre-frontal feeding cue — informational
+    #    only (task: display/light-weight, do NOT weight in wx_fit).
+    #  * Sacramento River flow (USGS IV @ Colusa): >=10,000 cfs is flood-
+    #    scale (limited access, deep seams only); 5,000–10,000 cfs is
+    #    elevated (strike zones shift to edges/hole heads). Winter baseflow
+    #    is far below that — no note (avoids noise on 40–600 cfs readings).
+    #  * NBB pool stage: baseline 1,875 ft = USACE-reported pool 1,874.95 ft
+    #    (2026-11-23, knowledge.WATER_FACTS). Low pool exposes shoreline;
+    #    high pool submerges banks.
+    pr = (wx or {}).get("pressure") or {}
+    if pr.get("trend") == "falling":
+        mods.append(
+            f"Barometer falling ({pr.get('delta_hpa', 0):+.1f} hPa over "
+            f"{pr.get('window_hours', '?')} h) — often coincides with active feeding."
+        )
+    if usgs_live:
+        flow = usgs_live.get("flow_cfs")
+        label = usgs_live.get("label") or "River"
+        if flow is not None:
+            if flow >= 10000:
+                mods.append(
+                    f"{label} flow high ({flow:,.0f} cfs) — fish deeper seams, "
+                    "slower presentations; bank access may be limited."
+                )
+            elif flow >= 5000:
+                mods.append(
+                    f"{label} flow elevated ({flow:,.0f} cfs) — strike zones shift; "
+                    "focus edges and hole heads."
+                )
+        stage = usgs_live.get("stage_ft")
+        if stage is not None:
+            if stage < 1870:
+                mods.append(
+                    f"NBB pool low ({stage:,.1f} ft, below the ~1,875 ft "
+                    "late-autumn baseline) — shoreline access extends; fish "
+                    "concentrate in deeper coves."
+                )
+            elif stage >= 1880:
+                mods.append(
+                    f"NBB pool high ({stage:,.1f} ft) — banks submerged; shorelines "
+                    "less effective, favor boats and deep structure."
+                )
     return mods
 
 
@@ -271,7 +320,8 @@ def _is_winter_focus(winter: dict | None, species: str) -> bool:
 
 
 def recommend(slug: str, date_str: str | None, target_species: str | None,
-              wx: dict | None = None, usgs: dict | None = None, *, gear: dict) -> dict:
+              wx: dict | None = None, usgs: dict | None = None, *, gear: dict,
+              usgs_live: dict | None = None) -> dict:
     """Rank species for a water/month and assemble the full plan.
 
     `date_str` should be validated by the router (422 on bad input); `_month`
@@ -384,7 +434,7 @@ def recommend(slug: str, date_str: str | None, target_species: str | None,
         "weekday": _weekday(date_str),
         "target_species": target_species,
         "suggestions": suggestions,
-        "weather_notes": weather_modifiers(wx, usgs),
+        "weather_notes": weather_modifiers(wx, usgs, usgs_live),
         "kayak": kayak_gate(slug, wx),
         "gear": gear,
         # Dossier-sourced context blocks (all traceable — see knowledge.py).

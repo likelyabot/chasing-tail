@@ -19,7 +19,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -211,24 +211,88 @@ async def nws_forecast(water: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Open-Meteo (unchanged behaviour: 48 h hourly).
+# Open-Meteo (48 h hourly + barometric pressure).
 # ---------------------------------------------------------------------------
+# hPa -> inches of mercury (standard-atmosphere conversion factor).
+HPA_TO_INHG = 0.02953
+# |ΔhPa| below this over the trend window counts as "steady" (~0.007 inHg —
+# smaller swings are instrument noise, not a frontal signal).
+PRESSURE_STEADY_BAND_HPA = 0.25
+# Trend window: last up to 5 hourly samples ≈ last ~4 h (within the "~3–6 h"
+# spec; early-morning runs degrade to however many samples exist so far).
+PRESSURE_WINDOW_SAMPLES = 5
+
+
+def _pressure_summary(payload: dict) -> dict | None:
+    """Hourly pressure_msl -> {hpa, inhg, trend, window_hours, delta_hpa, as_of_local}.
+
+    Pure function over the Open-Meteo payload (works on fresh AND cached
+    data). Payload times are LOCAL (the request pins timezone=); the
+    response's utc_offset_seconds supplies the local offset without needing
+    tzdata. Feeds the panel display + a soft feeding hint only —
+    deliberately NOT weighted into wx_fit (task constraint).
+    """
+    h = payload.get("hourly") or {}
+    times = h.get("time") or []
+    pres = h.get("pressure_msl") or []
+    if not times or len(times) != len(pres):
+        return None
+    offset = payload.get("utc_offset_seconds") or 0
+    tz = timezone(timedelta(seconds=offset))
+    now_local = datetime.now(timezone.utc).astimezone(tz)
+    samples = []
+    for t, p in zip(times, pres):
+        if p is None:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(t))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz)
+        if dt <= now_local:
+            samples.append((dt, float(p)))
+    if not samples:
+        return None
+    window = samples[-PRESSURE_WINDOW_SAMPLES:]
+    cur = window[-1][1]
+    if len(window) >= 2:
+        delta = cur - window[0][1]
+        if delta <= -PRESSURE_STEADY_BAND_HPA:
+            trend = "falling"
+        elif delta >= PRESSURE_STEADY_BAND_HPA:
+            trend = "rising"
+        else:
+            trend = "steady"
+    else:
+        delta, trend = 0.0, "unknown"  # e.g. 01:00 local — one sample so far
+    return {
+        "hpa": round(cur, 1),
+        "inhg": round(cur * HPA_TO_INHG, 2),
+        "trend": trend,
+        "window_hours": len(window) - 1,
+        "delta_hpa": round(delta, 2),
+        "as_of_local": window[-1][0].strftime("%Y-%m-%d %H:%M"),
+    }
+
+
 async def open_meteo_hourly(water: dict) -> dict:
     """48 h forecast. Returns the RAW Open-Meteo payload (nested 'hourly' and
     'daily' dicts — the UI and engine consume wx['hourly'] in °F/mph units,
-    converted AT THE SOURCE via temperature_unit/wind_speed_unit) plus
+    converted AT THE SOURCE via temperature_unit/wind_speed_unit) plus a
+    computed 'pressure' block (hPa/inHg + rising/falling/steady trend) and
     fetched_at/stale bookkeeping. Never raises; degrades to error dict."""
     client = _client_now()  # shared client — plain use; `async with` would close it
-    # Key carries 'f' (imperial units): bumped from om_<slug> so the first
-    # post-deploy fetch is fresh and stale °C/km-h cache entries can never be
-    # served (even as a failure fallback).
-    key = f"om_f_{water['slug']}"
+    # Key carries 'pf' (imperial units + pressure): bumped from om_f_<slug>
+    # so the first post-deploy fetch is fresh and caches lacking pressure_msl
+    # can never be served (even as a failure fallback).
+    key = f"om_pf_{water['slug']}"
     cached = _read_cache(key)
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={water['lat']}&longitude={water['lon']}"
-        "&hourly=temperature_2m,wind_speed_10m,wind_gusts_10m,precipitation_probability"
-        "&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,sunrise,sunset"
+        "&hourly=temperature_2m,wind_speed_10m,wind_gusts_10m,precipitation_probability,pressure_msl"
+        "&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,sunrise,sunset,pressure_msl_max,pressure_msl_min"
         "&temperature_unit=fahrenheit&wind_speed_unit=mph"
         "&forecast_days=2&timezone=America/Los_Angeles"
     )
@@ -241,9 +305,11 @@ async def open_meteo_hourly(water: dict) -> dict:
     except Exception as e:
         log.warning("Open-Meteo failed: %s", e)
         if cached:
+            cached["pressure"] = _pressure_summary(cached)
             return cached
         return {"error": f"Open-Meteo unavailable: {e.__class__.__name__}"}
     payload = {**data, "_fetched_ts": time.time(), "stale": False, "fetched_at": now_iso()}
+    payload["pressure"] = _pressure_summary(data)
     _write_cache(key, payload)
     return payload
 

@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import catches, chat, community, gear, recommend, trips, users, waters, weather
+from .routers import catches, chat, community, conditions, gear, recommend, trips, users, waters, weather
 
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
 log = logging.getLogger(__name__)
@@ -28,8 +28,10 @@ async def lifespan(app: FastAPI):
              config.DATABASE_PATH, config.TZ,
              "set" if config.HERMES_CHAT_ENDPOINT else "unset")
     yield
+    from .services.usgs import aclose as usgs_aclose
     from .services.weather import aclose
     await aclose()
+    await usgs_aclose()
 
 
 app = FastAPI(
@@ -53,6 +55,7 @@ app.include_router(trips.router)
 app.include_router(catches.router)
 app.include_router(gear.router)
 app.include_router(weather.router)
+app.include_router(conditions.router)
 app.include_router(community.router)
 app.include_router(recommend.router)
 app.include_router(chat.router)

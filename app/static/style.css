@@ -127,3 +127,25 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
   #gear-editor .gear-row input { flex: 1 1 100%; min-width: 0; }
   #gear-editor .gear-row button { margin-left: auto; }
 }
+/* live conditions (USGS IV headline + barometer) + dismissible alerts strip */
+.cond-line { margin: 5px 0; font-size: .98rem; }
+.cond-line .stale-flag { color: var(--warn); font-size: .78rem; margin-left: 6px; }
+.cond-line.pressure { color: var(--accent2); font-weight: 600; }
+.alert-strip {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  padding: 8px 10px; border-radius: 10px; margin: 8px 0;
+  background: rgba(232, 180, 90, .07); border: 1px solid rgba(232, 180, 90, .35);
+}
+.alert-title { font-weight: 700; font-size: .85rem; color: var(--warn); margin-right: 2px; }
+.alert-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px;
+  border-radius: 999px; background: var(--panel2); border: 1px solid var(--border);
+  font-size: .84rem;
+}
+.alert-chip.sev-warn { border-color: rgba(232, 180, 90, .6); }
+.alert-chip b { color: var(--accent); font-weight: 600; }
+.alert-x {
+  cursor: pointer; background: none; border: 0; color: var(--dim);
+  font-size: .95rem; line-height: 1; padding: 0 1px;
+}
+.alert-x:hover { color: var(--ink); }

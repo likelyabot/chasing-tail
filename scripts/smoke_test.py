@@ -29,6 +29,16 @@ Verifies the acceptance criteria:
   10. community: FishBrain CSV+JSON import (fuzzy columns, tolerant dates,
       water matching, batch undo), unified GET filters, Reddit disabled path
       (env unset), hermetic parser/matching fixtures (no live Reddit calls)
+  11. live conditions (task t_04a00997):
+      - /api/conditions/<slug>: USGS IV block for NBB (site 11413515) +
+        Sacramento (site 11389500) with as_of_iso/age_hours/qualifiers;
+        null for Collins/Loon (no gauge — never fabricated); alerts list
+        (may be empty) with stable key/signature/severity/message shape
+      - weather bundle carries a pressure block (hPa/inHg + trend)
+      - recommend stays 200 with the new live soft modifiers
+      - hermetic (no network): IV wire-shape parsing, forced-outage
+        degradation (stale cache served / no_data — never a 500), pressure
+        trend classification, alert derivation + stable dedupe signatures
 Exit code 0 = all pass.
 """
 import json
@@ -109,6 +119,209 @@ def as_dict(x):
     return x if isinstance(x, dict) else {}
 
 
+def test_conditions(base):
+    """11. Live conditions: /api/conditions contract + pressure + recommend."""
+    site_expect = {
+        "new-bullards-bar": "11413515",
+        "sacramento-river-westport": "11389500",
+    }
+    for slug in ("collins-lake", "new-bullards-bar", "loon-lake", "sacramento-river-westport"):
+        st, body = req("GET", f"/api/conditions/{slug}")
+        check(f"conditions {slug}: HTTP 200 (never 500)", st == 200, f"(got {st} {body!r:.120})")
+        if st != 200:
+            continue
+        body = as_dict(body)
+        usgs = body.get("usgs")
+        alerts = body.get("alerts")
+        check(f"conditions {slug}: alerts is a list (may be empty)", isinstance(alerts, list),
+              f"(got {type(alerts).__name__})")
+        for a in alerts or []:
+            check(f"conditions {slug}: alert shape ({a.get('key')})",
+                  isinstance(a, dict)
+                  and all(k in a for k in ("key", "signature", "severity", "message")),
+                  f"(got {a!r})")
+        if slug in site_expect:
+            check(f"conditions {slug}: usgs block present", isinstance(usgs, dict),
+                  f"(got {usgs!r:.120})")
+            if isinstance(usgs, dict):
+                check(f"conditions {slug}: site id {site_expect[slug]}",
+                      usgs.get("site") == site_expect[slug], f"(got {usgs.get('site')!r})")
+                if usgs.get("status") not in ("no_recent_reading", "no_data"):
+                    check(f"conditions {slug}: at least one real reading",
+                          any(usgs.get(f) is not None for f in ("stage_ft", "flow_cfs", "temp_f")),
+                          f"(got {usgs!r:.160})")
+                    check(f"conditions {slug}: as_of_iso + age_hours present",
+                          isinstance(usgs.get("as_of_iso"), str) and usgs["as_of_iso"]
+                          and isinstance(usgs.get("age_hours"), (int, float)),
+                          f"(as_of={usgs.get('as_of_iso')!r} age={usgs.get('age_hours')!r})")
+                if usgs.get("qualifiers") is not None:
+                    check(f"conditions {slug}: qualifiers surfaced (displayed, not fatal)",
+                          isinstance(usgs["qualifiers"], str) and usgs["qualifiers"],
+                          f"(got {usgs['qualifiers']!r})")
+        else:
+            check(f"conditions {slug}: usgs is null (no gauge — never fabricated)",
+                  usgs is None, f"(got {usgs!r:.120})")
+
+    # Pressure block in the weather bundle (hourly + trend + inHg conversion).
+    st, wb = req("GET", "/api/weather/sacramento-river-westport")
+    if st == 200:
+        om = as_dict(as_dict(wb).get("open_meteo"))
+        p = om.get("pressure")
+        check("weather bundle: pressure block present", isinstance(p, dict), f"(got {p!r:.120})")
+        if isinstance(p, dict):
+            check("pressure: trend in rising/falling/steady/unknown",
+                  p.get("trend") in ("rising", "falling", "steady", "unknown"),
+                  f"(got {p.get('trend')!r})")
+            check("pressure: hPa/inHg numeric + conversion consistent",
+                  isinstance(p.get("hpa"), (int, float)) and isinstance(p.get("inhg"), (int, float))
+                  and abs(p["inhg"] - p["hpa"] * 0.02953) < 0.01, f"(got {p!r})")
+    else:
+        check("weather bundle reachable for pressure check", False, f"(got {st})")
+
+    # Recommend stays healthy with the new live soft modifiers.
+    st, plan = req("GET", "/api/recommend?water_slug=sacramento-river-westport&live_weather=true")
+    check("recommend live (soft USGS/pressure modifiers): HTTP 200", st == 200,
+          f"(got {st} {plan!r:.120})")
+    if st == 200:
+        check("recommend live: weather_notes is a list",
+              isinstance(as_dict(plan).get("weather_notes"), list))
+
+
+def run_conditions_hermetic():
+    """Hermetic live-conditions checks (no network): IV parsing, forced-outage
+    degradation, pressure trend classification, alert derivation + dedupe."""
+    import asyncio
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    import httpx
+
+    import app.config as cfg
+    from app.services import alerts as cond_alerts
+    from app.services import usgs as usgs_svc
+    from app.services import weather as wx
+
+    # --- USGS IV payload parsing (real wire shape, verified 2026-11-26) ---
+    def iv_fixture(points, code="00065", site="11389500"):
+        return {"value": {"timeSeries": [{
+            "sourceInfo": {"siteCode": [{"value": site}]},
+            "variable": {"variableCode": [{"value": code}]},
+            "values": [{
+                "value": [{"value": v, "qualifiers": ["P"], "dateTime": t} for t, v in points],
+                "qualifier": [{"qualifierCode": "P",
+                               "qualifierDescription": "Provisional data subject to revision."}],
+                "sample": [], "censorCode": [],
+            }],
+        }]}}
+
+    now = datetime.now(timezone.utc)
+    # Chronological: oldest (1000.0) -> newest (1030.0).
+    pts = [((now - timedelta(minutes=15 * (3 - i))).strftime("%Y-%m-%dT%H:%M:%S.000-08:00"),
+            str(1000.0 + i * 10.0)) for i in range(4)]
+    parsed = usgs_svc.parse_iv_payload(iv_fixture(pts))
+    check("usgs: IV fixture parses (4 chronological points)",
+          "00065" in parsed and len(parsed["00065"]["points"]) == 4, f"(got {parsed!r:.160})")
+    check("usgs: latest value wins + qualifiers kept",
+          parsed["00065"]["points"][-1][1] == 1030.0 and parsed["00065"]["points"][-1][2] == ["P"],
+          f"(got {parsed['00065']['points'][-1]!r})")
+    check("usgs: junk payload tolerated (no raise)",
+          usgs_svc.parse_iv_payload({"value": {"timeSeries": [None, {"variable": {}}]}}) == {})
+    check("usgs: collins/loon have no site spec (null contract)",
+          usgs_svc.SITE_SPECS.get("collins-lake") is None
+          and usgs_svc.SITE_SPECS.get("loon-lake") is None)
+    blk_empty = usgs_svc._assemble("11413515",
+                                   {"site": "11413515", "name": "T", "label": "t", "params": ["00010"]},
+                                   {}, "live", False, now)
+    check("usgs: empty 7-day window -> no_recent_reading (never fabricates)",
+          blk_empty["status"] == "no_recent_reading" and blk_empty["stage_ft"] is None
+          and blk_empty["as_of_iso"] is None, f"(got {blk_empty!r:.160})")
+
+    # --- Forced outage: stale cache served; no cache -> no_data (no raise) ---
+    spec = {"site": "11413515", "name": "TEST SITE", "label": "test", "params": ["00010"]}
+    spec2 = {"site": "99999999", "name": "EMPTY SITE", "label": "test2", "params": ["00010"]}
+
+    class Boom(httpx.AsyncBaseTransport):
+        async def handle_request(self, request):
+            raise httpx.ConnectError("forced outage", request=request)
+
+    with tempfile.TemporaryDirectory() as td:
+        old_cache = cfg.CACHE_DIR
+        cfg.CACHE_DIR = Path(td)
+        try:
+            key = "usgs_iv_11413515"
+            wx._write_cache(key, iv_fixture([("2026-11-20T12:00:00.000-08:00", "1874.5")],
+                                            code="00010"))
+            cf = cfg.CACHE_DIR / f"{key}.json"
+            data = json.loads(cf.read_text())
+            data["_fetched_ts"] = time.time() - 7 * 3600  # epoch float (> STALE_AFTER_S)
+            cf.write_text(json.dumps(data))
+
+            async def fetch_boom(sp):
+                async with httpx.AsyncClient(transport=Boom()) as client:
+                    return await usgs_svc.fetch_site(sp, client=client)
+
+            block = asyncio.run(fetch_boom(spec))
+            check("usgs down: stale cache served (status=stale, stale=True)",
+                  block["status"] == "stale" and block["stale"] is True, f"(got {block!r:.160})")
+            check("usgs down: cached value intact (stage_ft=1874.5)",
+                  block["stage_ft"] == 1874.5, f"(got {block!r:.160})")
+            block2 = asyncio.run(fetch_boom(spec2))
+            check("usgs down + no cache: status=no_data (no raise, no fabrication)",
+                  block2["status"] == "no_data" and block2["stage_ft"] is None
+                  and block2["as_of_iso"] is None, f"(got {block2!r:.160})")
+        finally:
+            cfg.CACHE_DIR = old_cache
+
+    # --- Pressure trend classification (pure function over payloads) ---
+    now_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hist_times = [(now_utc - timedelta(hours=i)).strftime("%Y-%m-%dT%H:00") for i in (4, 3, 2, 1, 0)]
+    p = wx._pressure_summary({"utc_offset_seconds": 0, "hourly": {
+        "time": hist_times, "pressure_msl": [1014.0, 1013.6, 1013.2, 1012.9, 1012.5]}})
+    check("pressure: falling detected over ~4h window",
+          p is not None and p["trend"] == "falling" and p["window_hours"] == 4, f"(got {p!r})")
+    check("pressure: hPa->inHg conversion consistent",
+          p is not None and abs(p["inhg"] - p["hpa"] * 0.02953) < 0.01, f"(got {p!r})")
+    flat = wx._pressure_summary({"utc_offset_seconds": 0, "hourly": {
+        "time": hist_times, "pressure_msl": [1013.0] * 5}})
+    check("pressure: flat -> steady", flat is not None and flat["trend"] == "steady", f"(got {flat!r})")
+    single = wx._pressure_summary({"utc_offset_seconds": 0, "hourly": {
+        "time": hist_times[:1], "pressure_msl": [1013.0]}})
+    check("pressure: single sample -> unknown (early morning)",
+          single is not None and single["trend"] == "unknown", f"(got {single!r})")
+    check("pressure: missing variable -> None (no crash)",
+          wx._pressure_summary({"utc_offset_seconds": 0, "hourly": {"time": hist_times}}) is None)
+
+    # --- Alert derivation (synthetic OM + USGS fixtures) ---
+    times = [(now_utc + timedelta(hours=i)).strftime("%Y-%m-%dT%H:00") for i in range(30)]
+    press = [1013.0 if i < 10 else 1012.7 - 0.05 * (i - 10) for i in range(30)]
+    probs = [10] * 30
+    probs[6] = 80
+    om = {"utc_offset_seconds": 0, "hourly": {
+        "time": times, "pressure_msl": press, "precipitation_probability": probs}}
+    usgs_blk = {"flow_cfs": 6000.0, "flow_prev_cfs": 4000.0, "stage_ft": None, "label": "test river"}
+    a = cond_alerts.derive_alerts("sacramento-river-westport", om, usgs_blk)
+    keys = {x["key"] for x in a}
+    check("alerts: pressure_drop fires (24h low >= 0.5 hPa below current)",
+          "pressure_drop" in keys, f"(got {sorted(keys)})")
+    check("alerts: rain_incoming fires (80% within 12h)", "rain_incoming" in keys,
+          f"(got {sorted(keys)})")
+    check("alerts: flow_rising fires (+50% and +2000 cfs vs prior reading)",
+          "flow_rising" in keys, f"(got {sorted(keys)})")
+    check("alerts: quiet water -> no false positives",
+          cond_alerts.derive_alerts("loon-lake", None, None) == [], "(got alerts on quiet scene)")
+    a_stock = cond_alerts.derive_alerts("collins-lake", None, None, today=date(2026, 11, 22))
+    check("alerts: stocking_tomorrow fires (Nov 23 seeded in knowledge)",
+          any(x["key"] == "stocking_tomorrow" for x in a_stock), f"(got {a_stock!r})")
+    a_nostock = cond_alerts.derive_alerts("collins-lake", None, None, today=date(2026, 11, 24))
+    check("alerts: no stocking alert on a non-stock day",
+          not any(x["key"] == "stocking_tomorrow" for x in a_nostock), f"(got {a_nostock!r})")
+    a_again = cond_alerts.derive_alerts("sacramento-river-westport", om, usgs_blk)
+    check("alerts: stable signatures while the condition persists (dedupe)",
+          {x["key"]: x["signature"] for x in a} == {x["key"]: x["signature"] for x in a_again},
+          f"({a!r} vs {a_again!r})")
+
+
 def main():
     print(f"Chasing Tail(s) smoke test -> {BASE}")
 
@@ -129,6 +342,10 @@ def main():
     v_nm2 = moon_phase(date(2026, 12, 9))
     check("lunar: almanac new moon 2026-12-09 00:52 UTC -> 'new moon', illum <= 10%",
           v_nm2["phase"] == "new moon" and v_nm2["illumination_pct"] <= 10, f"(got {v_nm2})")
+
+    # 0b. live conditions: hermetic (no network) — IV parsing, forced-outage
+    # degradation, pressure trend, alert derivation + dedupe signatures.
+    run_conditions_hermetic()
 
     # 1. healthz
     st, body = req("GET", "/healthz")
@@ -664,6 +881,9 @@ def main():
     check("FB import: unrecognized columns -> 400", st == 400, f"(got {st})")
     st, _bad = req_raw("POST", "/api/community/fishbrain/import", "   ")
     check("FB import: empty body -> 400", st == 400, f"(got {st})")
+
+    # 11. live conditions (USGS IV + barometer + alerts).
+    test_conditions(BASE)
 
     # 10. cleanup: delete catch + trip
     st, _ = req("DELETE", f"/api/catches/{catch_id}")
