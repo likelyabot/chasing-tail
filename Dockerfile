@@ -1,4 +1,4 @@
-# fishing-app — LAN-only fishing trip planner (FastAPI + SQLite)
+# Chasing Tail(s) — LAN-only fishing trip planner (FastAPI + SQLite)
 # Non-root, single container, port 8000. Contract: see ../docker-compose repo
 # (likelyabot/docker-compose, folder fishing/) — healthcheck hits /healthz.
 FROM python:3.12-slim

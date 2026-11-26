@@ -1,4 +1,4 @@
-# fishing-app
+# Chasing Tail(s)
 
 LAN-only fishing trip planner: FastAPI + SQLite, single container, no build
 step. Plan trips, check live weather and reservoir levels, get rule-based
@@ -8,10 +8,10 @@ tackle recommendations (with a kayak safety gate), and log catches.
 
 ```bash
 # Option A: Docker (mirrors production)
-docker build -t fishing-app:latest .
+docker build -t chasing-tail:latest .
 docker run --rm -p 8090:8000 \
   -v fishing_app_data:/app/data \
-  fishing-app:latest
+  chasing-tail:latest
 # open http://localhost:8090
 
 # Option B: bare Python (dev)
@@ -22,9 +22,9 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 Production deploy: Portainer stack in the `likelyabot/docker-compose` repo,
-folder `fishing/` (image built from this repo). See that repo's
-`fishing/README.md` for the required `FISHING_APP_BIND_IP` variable — the
-compose file fails fast if it's unset (LAN-only by design, no 0.0.0.0 bind).
+folder `fishing/` (image built from this repo). The compose file consumes
+the GHCR image with `pull_policy: always` — see that repo's
+`fishing/README.md` for the stack variables.
 
 ## Configuration (env)
 

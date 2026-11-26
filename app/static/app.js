@@ -1,4 +1,4 @@
-/* fishing-app UI — vanilla JS, no build step. Talks to /api/*. */
+/* Chasing Tail(s) UI — vanilla JS, no build step. Talks to /api/*. */
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);

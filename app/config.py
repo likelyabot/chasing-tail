@@ -19,7 +19,7 @@ CACHE_DIR = Path(os.environ.get("CACHE_DIR", str(Path(DATABASE_PATH).parent / "c
 
 # Upstream fetch policy.
 UPSTREAM_TIMEOUT_S = float(os.environ.get("UPSTREAM_TIMEOUT_S", "20"))
-USER_AGENT = "fishing-app/0.1 (LAN trip planner; contact: likelyabot@users.noreply.github.com)"
+USER_AGENT = "chasing-tail/0.1 (LAN trip planner; contact: likelyabot@users.noreply.github.com)"
 
 # Reddit poller (OFFICIAL API, optional feature). Disabled unless BOTH
 # credentials are set — the API then reports reddit.enabled=false and the UI

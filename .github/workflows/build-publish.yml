@@ -2,7 +2,7 @@ name: build-publish
 
 # Every push to main builds the app image and publishes it to GHCR.
 # This is what makes the Portainer stack updatable via GitHub:
-#   push code here -> image lands in ghcr.io/likelyabot/fishing-app
+#   push code here -> image lands in ghcr.io/likelyabot/chasing-tail
 #   -> "Update the stack" in Portainer pulls it (pull_policy: always).
 #
 # Auth: the built-in GITHUB_TOKEN with packages:write (declared below).
@@ -41,7 +41,7 @@ jobs:
           # :latest = rolling edge for the stack; immutable SHA tag =
           # pin/rollback handle (set FISHING_APP_IMAGE to a SHA to roll back).
           tags: |
-            ghcr.io/${{ github.repository_owner }}/fishing-app:latest
-            ghcr.io/${{ github.repository_owner }}/fishing-app:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/chasing-tail:latest
+            ghcr.io/${{ github.repository_owner }}/chasing-tail:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

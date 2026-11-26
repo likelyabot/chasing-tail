@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end smoke test against a RUNNING fishing-app server.
+"""End-to-end smoke test against a RUNNING Chasing Tail(s) server.
 
 Usage: python3 scripts/smoke_test.py [BASE_URL]   (default http://localhost:8090)
 
@@ -110,7 +110,7 @@ def as_dict(x):
 
 
 def main():
-    print(f"fishing-app smoke test -> {BASE}")
+    print(f"Chasing Tail(s) smoke test -> {BASE}")
 
     # 0. lunar: almanac vectors via direct import (no server needed).
     # Published UTC instants (timeanddate.com, nightskytoday.com, earthsky.org,

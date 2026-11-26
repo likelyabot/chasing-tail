@@ -1,4 +1,4 @@
-"""fishing-app entrypoint: FastAPI app, /healthz, API routers, single-page UI.
+"""Chasing Tail(s) entrypoint: FastAPI app, /healthz, API routers, single-page UI.
 
 LAN-only by design (no auth in v1 — trusted network). Run:
     uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="fishing-app",
+    title="Chasing Tail(s)",
     version="0.1.0",
     description="LAN-only fishing trip planner (FastAPI + SQLite).",
     lifespan=lifespan,
