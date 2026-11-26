@@ -1,11 +1,18 @@
-"""Trips: full CRUD. Multi-user capable — any user may create/update/delete."""
+"""Trips: full CRUD + the consolidated per-trip briefing. Multi-user
+capable — any user may create/update/delete."""
+import asyncio
+import logging
 import sqlite3
 from collections.abc import Iterator
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import db
 from ..models import TripIn, TripOut, TripUpdate
+from ..services import briefing
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/trips", tags=["trips"])
 
@@ -76,6 +83,54 @@ def get_trip(trip_id: int, conn: sqlite3.Connection = Depends(get_conn)):
     if not row:
         raise HTTPException(404, "trip not found")
     return _row_to_out(conn, row)
+
+
+@router.get("/{trip_id}/briefing")
+async def trip_briefing(trip_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+    """Consolidated per-trip briefing: plan + conditions + gear.
+
+    One place answers "what to bring" + "what/when to target":
+      plan       — target species (with pixel-art sprites), regs,
+                   stocking, recommended tactics/windows (recommend engine)
+      conditions — weather (temp/wind/rain/sun), pressure + trend, lunar,
+                   USGS water level + flow for the trip's water
+      gear       — the user's tackle + conditional additions (each with a
+                   human-readable reason; see app/services/gear_rules.py)
+
+    Works for planned trips (future date -> forecast window) and logged
+    trips (past date -> latest snapshot, labelled conditions.horizon).
+    Resilient: upstreams degrade individually; the endpoint never 500s
+    (worst case: 200 with degraded blocks + a note).
+    """
+    row = conn.execute("SELECT * FROM trips WHERE id = ?", (trip_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "trip not found")
+    w = conn.execute(
+        "SELECT * FROM waters WHERE id = ?", (row["water_id"],)
+    ).fetchone()
+    if not w:  # FK-integrity paranoia: a dangling water_id must not 500
+        raise HTTPException(404, "trip's water not found")
+    try:
+        return await briefing.build_briefing(conn, row, w)
+    except Exception:
+        # Last-resort guard (constraint: never 500 or crash). Upstreams are
+        # individually non-raising, so this only fires on programmer error.
+        log.exception("briefing assembly failed for trip %s — serving degraded 200", trip_id)
+        return {
+            "trip_id": trip_id,
+            "water": {"slug": w["slug"], "name": w["name"], "kind": w["kind"]},
+            "plan": {"species": [], "regs": None, "stocking": None, "tactics": None,
+                     "kayak": None, "reminders": [], "winter_targeting": None},
+            "conditions": {
+                "date": row["date"],
+                "weather": {"source": None, "horizon": None,
+                            "note": "briefing assembly failed — see server log"},
+                "water_level": None, "flow": None, "pressure": None,
+                "lunar": None,
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+            "gear": {"base": [], "conditional": []},
+        }
 
 
 @router.patch("/{trip_id}", response_model=TripOut)
