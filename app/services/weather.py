@@ -19,13 +19,14 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import httpx
 
 from .. import config
 from ..knowledge import USGS_STATIONS
+from . import lunar
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +84,18 @@ def _write_cache(key: str, payload: dict) -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _bundle_day() -> date:
+    """Calendar date this bundle is for, in the app's display timezone
+    (config.TZ, default America/Los_Angeles) — the same date basis as the
+    sunrise/sunset line. Falls back to UTC if the tz database is missing."""
+    now = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now.astimezone(ZoneInfo(config.TZ)).date()
+    except Exception:
+        return now.date()
 
 
 def _parse_iso_time(s: str | None) -> datetime | None:
@@ -653,5 +666,6 @@ async def weather_bundle(water: dict) -> dict:
         open_meteo_hourly(water),
         usgs_gauges(water, client),
     )
-    return {"nws": nws, "open_meteo": om, "usgs": usgs, "water": water["slug"],
-            "generated_at": now_iso()}
+    return {"nws": nws, "open_meteo": om, "usgs": usgs,
+            "lunar": lunar.moon_phase(_bundle_day()),
+            "water": water["slug"], "generated_at": now_iso()}

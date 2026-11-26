@@ -21,13 +21,27 @@ Verifies the acceptance criteria:
      (DB state restored before the final cleanup)
   8. inline plan: GET /api/recommend with a created trip's water_slug+date
      returns 200 with suggestions (the per-card Plan panel's data source)
+  9. lunar: GET /api/weather/<slug> carries a `lunar` object (valid phase,
+     illumination 0-100, day countdowns) for at least two waters, and the
+     pure function app.services.lunar.moon_phase reproduces three published
+     almanac dates (2026-11-09 new, 2026-11-24 full, 2026-12-09 new) within
+     tolerance via direct import (no server needed for those checks)
 Exit code 0 = all pass.
 """
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import date
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+# Pure stdlib module (app/__init__.py and app/services/__init__.py are
+# docstring-only), so this import works without fastapi installed.
+from app.services.lunar import moon_phase
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8090"
 PASS, FAIL = 0, 0
@@ -68,6 +82,24 @@ def as_dict(x):
 
 def main():
     print(f"fishing-app smoke test -> {BASE}")
+
+    # 0. lunar: almanac vectors via direct import (no server needed).
+    # Published UTC instants (timeanddate.com, nightskytoday.com, earthsky.org,
+    # 13cal.net all agree):
+    #   new moon  2026-11-09 07:02 UTC
+    #   full moon 2026-11-24 14:53 UTC  (Beaver Moon)
+    #   new moon  2026-12-09 00:52 UTC
+    # The mean-lunation model must land each within +/-1 day; checked via
+    # phase name + illumination at noon UTC of the almanac date.
+    v_nm = moon_phase(date(2026, 11, 9))
+    check("lunar: almanac new moon 2026-11-09 07:02 UTC -> 'new moon', illum <= 10%",
+          v_nm["phase"] == "new moon" and v_nm["illumination_pct"] <= 10, f"(got {v_nm})")
+    v_fm = moon_phase(date(2026, 11, 24))
+    check("lunar: almanac full moon 2026-11-24 14:53 UTC -> 'full moon', illum >= 90%",
+          v_fm["phase"] == "full moon" and v_fm["illumination_pct"] >= 90, f"(got {v_fm})")
+    v_nm2 = moon_phase(date(2026, 12, 9))
+    check("lunar: almanac new moon 2026-12-09 00:52 UTC -> 'new moon', illum <= 10%",
+          v_nm2["phase"] == "new moon" and v_nm2["illumination_pct"] <= 10, f"(got {v_nm2})")
 
     # 1. healthz
     st, body = req("GET", "/healthz")
@@ -161,6 +193,20 @@ def main():
           and all(0 <= t <= 120 for t in om_temps),
           f"(n={len(om_temps)} min={min(om_temps) if om_temps else None} "
           f"max={max(om_temps) if om_temps else None})")
+    # Lunar: computed locally (no external API) — same date basis as the
+    # rest of the bundle; renders on the Weather tab for every water.
+    VALID_PHASES = {"new moon", "waxing crescent", "first quarter", "waxing gibbous",
+                    "full moon", "waning gibbous", "last quarter", "waning crescent"}
+    lu = as_dict(wx).get("lunar")
+    check("weather: lunar object present (valid phase, illumination 0–100, day countdowns)",
+          st == 200 and isinstance(lu, dict) and lu.get("phase") in VALID_PHASES
+          and isinstance(lu.get("illumination_pct"), (int, float))
+          and 0 <= lu["illumination_pct"] <= 100
+          and isinstance(lu.get("next_new_moon_in_days"), int) and lu["next_new_moon_in_days"] >= 0
+          and isinstance(lu.get("next_full_moon_in_days"), int) and lu["next_full_moon_in_days"] >= 0,
+          f"(lunar={lu!r})")
+    if isinstance(lu, dict):
+        print(f"      lunar (Collins Lake): {lu}")
     usgs = as_dict(wx).get("usgs")
     print(f"      USGS (Collins Lake): {usgs!r:.160}")
 
@@ -200,6 +246,11 @@ def main():
           st == 200 and isinstance(usgs4, dict) and not usgs4.get("gauges")
           and "no public" in (usgs4.get("note") or "").lower(),
           f"(got {usgs4!r:.160})")
+    lu4 = as_dict(wx4).get("lunar")
+    check("weather: lunar present for a second water (Loon Lake)",
+          st == 200 and isinstance(lu4, dict) and lu4.get("phase") in VALID_PHASES
+          and isinstance(lu4.get("illumination_pct"), (int, float)) and 0 <= lu4["illumination_pct"] <= 100,
+          f"(lunar={lu4!r})")
 
     # ---- dossier integration: regs seeds vs dossier §4 ----
     def reg_entry(plan, species_prefix):

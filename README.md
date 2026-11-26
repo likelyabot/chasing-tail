@@ -44,7 +44,7 @@ compose file fails fast if it's unset (LAN-only by design, no 0.0.0.0 bind).
 - `GET/POST/PATCH/DELETE /api/trips[/{id}]` — trip CRUD
 - `GET/POST/PATCH/DELETE /api/catches[/{id}]` — catch CRUD (nested under trips)
 - `GET/PUT/DELETE /api/gear` — tackle list (editable in UI; resets to repo defaults)
-- `GET /api/weather/{water_slug}` — NWS forecast + Open-Meteo hourly + USGS gauge
+- `GET /api/weather/{water_slug}` — NWS forecast + Open-Meteo hourly + USGS gauge + lunar phase (computed locally)
 - `GET /api/recommend?water_slug=&date=&species=&live_weather=` — rule-based plan
 - `POST /api/chat` — **stub**: proxies to `HERMES_CHAT_ENDPOINT` if set, else "disabled"
 
@@ -60,6 +60,10 @@ Interactive docs: `http://localhost:8000/docs`.
   per station — `latest-continuous` first, falling back to `latest-daily` for
   stations that only publish daily (NBB's pair, verified 2026-11-23).
   Dormant stations are labeled, not silently dropped. Cached 15 min.
+- **Lunar phase**: computed locally in-process (fixed almanac-verified
+  new-moon epoch + mean synodic month — `app/services/lunar.py`, validated
+  against published 2026 almanac dates in the smoke test). No external API;
+  the Weather tab shows a 🌑–🌘 line beside sunrise/sunset for every water.
 - Every source degrades gracefully: on fetch failure the last cached payload
   is served with `stale: true` and its `fetched_at` timestamp; with no cache
   at all the panel shows an explicit error instead of crashing.

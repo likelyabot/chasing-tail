@@ -456,10 +456,33 @@ async function loadWeather() {
       if (sunUp) sunBits.push(`☀️ Sunrise ${sunUp}`);
       if (sunDown) sunBits.push(`🌇 Sunset ${sunDown}`);
       const sunLine = sunBits.length ? `<div class="sunline">${sunBits.join(" · ")}</div>` : "";
+      // Lunar line: computed server-side (pure local calc, no external API),
+      // same date basis as the rest of the bundle. Renders for every water;
+      // missing/invalid fields degrade to a hidden line, never "undefined".
+      const PHASE_EMOJI = {
+        "new moon": "🌑", "waxing crescent": "🌒", "first quarter": "🌓",
+        "waxing gibbous": "🌔", "full moon": "🌕", "waning gibbous": "🌖",
+        "last quarter": "🌗", "waning crescent": "🌘",
+      };
+      const ln = (w && typeof w.lunar === "object" && w.lunar) ? w.lunar : null;
+      const lunarBits = [];
+      if (ln && PHASE_EMOJI[ln.phase] && Number.isFinite(ln.illumination_pct)) {
+        const pct = Math.max(0, Math.min(100, Math.round(ln.illumination_pct)));
+        const pretty = ln.phase.split(" ").map((x) => x.charAt(0).toUpperCase() + x.slice(1)).join(" ");
+        lunarBits.push(`${PHASE_EMOJI[ln.phase]} ${pretty} · ${pct}% lit`);
+        if (Number.isInteger(ln.next_full_moon_in_days)) {
+          lunarBits.push(ln.next_full_moon_in_days === 0 ? "full tonight" : `full in ${ln.next_full_moon_in_days}d`);
+        }
+        if (Number.isInteger(ln.next_new_moon_in_days)) {
+          lunarBits.push(ln.next_new_moon_in_days === 0 ? "new tonight" : `new in ${ln.next_new_moon_in_days}d`);
+        }
+      }
+      const lunarLine = lunarBits.length ? `<div class="sunline">${lunarBits.join(" · ")}</div>` : "";
       omHtml = `
         <div class="card">
           <h3 style="margin-top:0">Hourly (next 24h) <span class="meta">temp °F · wind mph</span>${omStale}</h3>
           ${sunLine}
+          ${lunarLine}
           <div class="hourbar">${temps.map((t, i) =>
             `<div class="bar" title="${esc(h.time[i])} ${t}°F wind ${winds[i]} mph"
               style="height:${Math.round(((t - tMin) / Math.max(tMax - tMin, 0.1)) * 100)}%"></div>`).join("")}</div>
