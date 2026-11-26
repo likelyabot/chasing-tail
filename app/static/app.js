@@ -108,6 +108,16 @@ function spriteImg(name) {
     `alt="${esc(name)}" width="46" height="26" loading="lazy">`;
 }
 
+// Lunar phase glyphs (shared by the Weather tab and trip briefings).
+const PHASE_EMOJI = {
+  "new moon": "🌑", "waxing crescent": "🌒", "first quarter": "🌓",
+  "waxing gibbous": "🌔", "full moon": "🌕", "waning gibbous": "🌖",
+  "last quarter": "🌗", "waning crescent": "🌘",
+};
+function phasePretty(phase) {
+  return String(phase || "").split(" ").map((x) => x.charAt(0).toUpperCase() + x.slice(1)).join(" ");
+}
+
 // =============================================================================
 // Live conditions: USGS headline + barometer + dismissible alerts
 // (GET /api/conditions/<slug>; server-side cached 15–30 min per upstream).
@@ -261,6 +271,10 @@ async function loadTrips() {
         <summary>Plan — in season + regs</summary>
         <div class="plan-body" data-planbody="${t.id}" data-water="${esc(t.water_slug || "")}" data-date="${esc(t.date || "")}"></div>
       </details>
+      <details class="plan briefing">
+        <summary>Briefing — targets + conditions + gear</summary>
+        <div class="briefing-body" data-briefing="${t.id}" data-water="${esc(t.water_slug || "")}" data-date="${esc(t.date || "")}"></div>
+      </details>
       <div class="row" style="margin-top:10px">
         <button class="ghost" data-togglecatch="${t.id}">+ catch</button>
         <button class="ghost" data-edittrip="${t.id}">edit</button>
@@ -336,11 +350,15 @@ $("#trip-list").addEventListener("click", async (e) => {
         }),
       });
       purgePlanCache(trip.id);  // water/date may have changed — stale plan is useless
+      purgeBriefCache(trip.id); // …and a stale briefing is worse
       await loadTrips();
     } catch (err) { alert("Failed: " + err.message); }
   } else if (t.dataset.planretry) {
-    const body = t.closest("details.plan")?.querySelector(".plan-body");
+    const body = t.closest("details:not(.briefing)")?.querySelector(".plan-body");
     if (body) loadPlanFor(body);
+  } else if (t.dataset.briefretry) {
+    const body = t.closest("details.briefing")?.querySelector(".briefing-body");
+    if (body) loadBriefingFor(body);
   }
 });
 
@@ -425,14 +443,155 @@ async function loadPlanFor(body) {
   }
 }
 
+// ---------- trip briefing (lazy consolidated plan + conditions + gear) ------
+// One GET /api/trips/<id>/briefing per card, fetched on first expand and
+// cached (key = trip|water|date, so an edited trip refetches; the edit
+// handler also purges the trip's entries explicitly).
+const BRIEF_CACHE = new Map();
+
+function briefKey(tripId, waterSlug, dateStr) {
+  return `brief|${tripId}|${waterSlug}|${dateStr}`;
+}
+
+function purgeBriefCache(tripId) {
+  for (const k of BRIEF_CACHE.keys()) {
+    if (k.startsWith(`brief|${tripId}|`)) BRIEF_CACHE.delete(k);
+  }
+}
+
+function renderBriefing(body, b) {
+  const plan = b.plan || {}, conds = b.conditions || {}, gear = b.gear || {};
+  let html = "";
+
+  // --- Target: species (with sprites) + regs summary + tactics/windows ---
+  html += `<div class="bf-block"><h4>🎯 Target</h4>`;
+  const sp = plan.species || [];
+  html += sp.length
+    ? `<div class="plan-picks">${sp.map((s, i) =>
+      `${i + 1}. ${spriteImg(s.name)}<strong>${esc(s.name)}</strong> <span class="meta">(${esc(s.activity || "?")}, score ${s.score ?? "?"})</span>`
+    ).join("<br>")}</div>`
+    : `<div class="meta">No target suggestions.</div>`;
+  const regsRows = (plan.regs && plan.regs.species) || [];
+  if (regsRows.length) {
+    html += `<div class="bf-reg">${regsRows.slice(0, 3).map((r) => {
+      const lim = [];
+      if (r.daily_bag != null) lim.push(`${r.daily_bag}/day`);
+      if (r.possession != null) lim.push(`${r.possession} possess`);
+      if (r.size_limit && r.size_limit !== "none") lim.push(r.size_limit);
+      return `<span class="chip">${esc(r.species)}${lim.length ? " — " + esc(lim.join(", ")) : ""}</span>`;
+    }).join("")}</div>`;
+    if (plan.regs.special_regs) html += `<div class="meta">Special: ${esc(plan.regs.special_regs)}</div>`;
+  }
+  const tac = plan.tactics;
+  if (tac) {
+    html += `<div class="bf-tac">`;
+    if (tac.rod) html += `<div><strong>Rig:</strong> ${esc(tac.rod)}</div>`;
+    if ((tac.lures || []).length) html += `<div><strong>Lures:</strong> ${esc(tac.lures.join("; "))}</div>`;
+    if (tac.lines) html += `<div><strong>Line:</strong> ${esc(tac.lines)}</div>`;
+    if ((tac.tips || []).length) html += `<div class="meta">${tac.tips.slice(0, 3).map(esc).join(" ")}</div>`;
+    html += `</div>`;
+  }
+  if (plan.kayak && plan.kayak.flag) {
+    html += `<div class="plan-kayak"><span class="kbadge ${esc(plan.kayak.level)}" ` +
+      `title="${esc(plan.kayak.reason || "")}">${esc(plan.kayak.flag)}</span></div>`;
+  }
+  html += `</div>`;
+
+  // --- Conditions: weather + water level/flow + pressure + lunar ---
+  const wxd = conds.weather || {};
+  const lines = [];
+  if (wxd.temp_min_f != null && wxd.temp_max_f != null) {
+    lines.push(`Temp ${Math.round(wxd.temp_min_f)}–${Math.round(wxd.temp_max_f)}°F`);
+  }
+  if (wxd.wind_peak_mph != null) lines.push(`wind peak ${Math.round(wxd.wind_peak_mph)} mph`);
+  if (wxd.precip_prob_max_pct != null) lines.push(`rain up to ${Math.round(wxd.precip_prob_max_pct)}%`);
+  const sunUp = fmtClockLocal(wxd.sunrise), sunDown = fmtClockLocal(wxd.sunset);
+  if (sunUp || sunDown) {
+    lines.push([sunUp ? `☀️ ${sunUp}` : "", sunDown ? `🌇 ${sunDown}` : ""].filter(Boolean).join(" · "));
+  }
+  const pr = conds.pressure;
+  if (pr && pr.inhg != null) {
+    lines.push(`Pressure ${Number(pr.inhg).toFixed(2)} inHg (${pr.hpa} hPa) · ${esc(pr.trend)}`);
+  }
+  const ln = conds.lunar;
+  if (ln && ln.phase) {
+    lines.push(`${PHASE_EMOJI[ln.phase] || ""} ${phasePretty(ln.phase)}` +
+      (ln.illumination_pct != null ? ` · ${Math.round(ln.illumination_pct)}% lit` : ""));
+  }
+  for (const [view, fallback] of [[conds.water_level, "Water level"], [conds.flow, "Flow"]]) {
+    if (!view) continue;
+    if (view.value != null) {
+      lines.push(`${esc(view.label || fallback)}: ${fmtNum(view.value)} ${esc(view.unit || "")}` +
+        (view.stale ? " <span class=\"stale\">(stale)</span>" : ""));
+    } else if (view.status === "no_recent_reading" || view.status === "no_data") {
+      lines.push(`${esc(view.label || fallback)}: no recent USGS reading`);
+    }
+  }
+  if (wxd.horizon === "last_known") {
+    lines.push(`<span class="stale">past date — latest snapshot (${esc(conds.date || "")})</span>`);
+  }
+  html += `<div class="bf-block"><h4>🌦 Conditions${wxd.horizon ? ` <span class="meta">· ${esc(wxd.horizon)}</span>` : ""}</h4>`;
+  html += lines.length
+    ? lines.map((l) => `<div class="bf-cond-line">${l}</div>`).join("")
+    : `<div class="meta">No condition data (upstreams unavailable).</div>`;
+  html += `</div>`;
+
+  // --- Bring: base gear checklist + conditional items highlighted ---
+  const base = gear.base || [], cond = gear.conditional || [];
+  html += `<div class="bf-block"><h4>🎒 Bring</h4>`;
+  html += `<div class="bf-base">${base.length
+    ? base.map((i) => `<span class="chip">${esc(i)}</span>`).join("")
+    : `<span class="meta">No gear on file.</span>`}</div>`;
+  html += cond.length
+    ? `<div class="bf-cond-list">${cond.map((c) =>
+      `<div class="bf-cond-item"><strong>${esc(c.item)}</strong><span class="reason">${esc(c.reason)}</span></div>`
+    ).join("")}</div>`
+    : `<div class="meta">No condition-triggered additions.</div>`;
+  html += `</div>`;
+
+  body.innerHTML = html;
+  body.dataset.state = "done";
+}
+
+async function loadBriefingFor(body) {
+  const key = briefKey(body.dataset.briefing, body.dataset.water, body.dataset.date);
+  const cached = BRIEF_CACHE.get(key);
+  if (cached) { renderBriefing(body, cached); return; }
+  body.dataset.state = "loading";
+  body.innerHTML = `<div class="meta">Building briefing…</div>`;
+  try {
+    const b = await api(`/api/trips/${body.dataset.briefing}/briefing`);
+    BRIEF_CACHE.set(key, b);
+    renderBriefing(body, b);
+  } catch (err) {
+    body.dataset.state = "error";
+    body.innerHTML = `<div class="err">Briefing failed: ${esc(err.message)} ` +
+      `<button class="ghost" data-briefretry="${body.dataset.briefing}" style="margin-left:8px">Retry</button></div>`;
+  }
+}
+
 $("#trip-list").addEventListener("toggle", (e) => {
-  const det = e.target instanceof Element ? e.target.closest("details.plan") : null;
+  const el = e.target instanceof Element ? e.target : null;
+  const det = el ? el.closest("details") : null;
   if (!det || !det.open) return;
+  // Briefing panel: lazy fetch of the consolidated plan+conditions+gear.
+  if (det.classList.contains("briefing")) {
+    const body = det.querySelector(".briefing-body");
+    if (!body || body.dataset.state === "loading" || body.dataset.state === "done") return;
+    if (!body.dataset.water) {
+      body.dataset.state = "error";
+      body.innerHTML = `<div class="err">No water on this trip — set a water to get a briefing.</div>`;
+      return;
+    }
+    loadBriefingFor(body);
+    return;
+  }
+  if (!det.classList.contains("plan")) return;
   const body = det.querySelector(".plan-body");
   if (!body || body.dataset.state === "loading" || body.dataset.state === "done") return;
   if (!body.dataset.water) {
     body.dataset.state = "error";
-    body.innerHTML = `<div class="err">No water on this trip — set a water to get a plan.</div>`;
+    body.innerHTML = `<div class="err">No water on this trip — set a water to see the plan.</div>`;
     return;
   }
   loadPlanFor(body);
@@ -631,11 +790,6 @@ async function loadWeather() {
       // Lunar line: computed server-side (pure local calc, no external API),
       // same date basis as the rest of the bundle. Renders for every water;
       // missing/invalid fields degrade to a hidden line, never "undefined".
-      const PHASE_EMOJI = {
-        "new moon": "🌑", "waxing crescent": "🌒", "first quarter": "🌓",
-        "waxing gibbous": "🌔", "full moon": "🌕", "waning gibbous": "🌖",
-        "last quarter": "🌗", "waning crescent": "🌘",
-      };
       const ln = (w && typeof w.lunar === "object" && w.lunar) ? w.lunar : null;
       const lunarBits = [];
       if (ln && PHASE_EMOJI[ln.phase] && Number.isFinite(ln.illumination_pct)) {

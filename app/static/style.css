@@ -123,6 +123,27 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 .kbadge.no { color: var(--danger); border-color: var(--danger); }
 .kbadge.caution { color: var(--warn); border-color: var(--warn); }
 .kbadge.ok { color: var(--ok); border-color: var(--ok); }
+/* ---------- trip briefing (consolidated plan + conditions + gear) ---------- */
+.briefing summary { color: var(--accent2); }
+.briefing summary::marker { color: var(--accent2); }
+.briefing-body { padding: 0 12px 10px; font-size: .9rem; }
+.bf-block { margin: 10px 0 0; }
+.bf-block h4 { margin: 0 0 5px; color: var(--accent); font-size: .92rem; }
+.bf-reg { margin: 6px 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.bf-tac { margin-top: 6px; color: var(--dim); line-height: 1.45; }
+.bf-tac strong { color: var(--ink); }
+.bf-cond-line { margin: 3px 0; color: var(--dim); }
+.bf-base { display: flex; flex-wrap: wrap; gap: 5px; margin: 4px 0 8px; }
+.bf-base .chip { font-size: .8rem; }
+.bf-cond-list { margin-top: 6px; }
+.bf-cond-item {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 7px 10px; margin: 5px 0; border-radius: 8px;
+  background: rgba(232, 180, 90, .08); border: 1px solid rgba(232, 180, 90, .45);
+}
+.bf-cond-item strong { color: var(--accent2); font-size: .9rem; }
+.bf-cond-item .reason { color: var(--dim); font-size: .82rem; }
+
 @media (max-width: 560px) {
   #gear-editor .gear-row input { flex: 1 1 100%; min-width: 0; }
   #gear-editor .gear-row button { margin-left: auto; }

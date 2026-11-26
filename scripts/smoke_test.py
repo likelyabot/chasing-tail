@@ -66,6 +66,7 @@ if _REPO_ROOT not in sys.path:
 # docstring-only), so this import works without fastapi installed.
 from app.services.lunar import moon_phase
 from app.services import species_icons
+from app.services import gear_rules
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8090"
 PASS, FAIL = 0, 0
@@ -302,6 +303,101 @@ def test_assets():
           and 'href="/icons/favicon-32.png" sizes="32x32" type="image/png"' in html_src)
 
 
+def run_gear_rules_hermetic():
+    """Conditional gear rules: forced fixtures -> expected items + reasons.
+
+    Direct function calls (no server, no network): a rainy + cold + windy
+    fixture must produce the right items WITH reasons; calm conditions
+    must produce none (no false positives); per-water rules (no-kayak
+    wind no-go, NBB low pool, Sac high flow) fire only for their water.
+    """
+    storm = {
+        "weather": {"temp_min_f": 38.0, "wind_peak_mph": 14.0,
+                    "precip_prob_max_pct": 80},
+        "water_level": None, "flow": None,
+    }
+    calm = {
+        "weather": {"temp_min_f": 62.0, "wind_peak_mph": 6.0,
+                    "precip_prob_max_pct": 10},
+        "water_level": None, "flow": None,
+    }
+    items = gear_rules.derive_conditional_gear("collins-lake", storm)
+    names = {i["item"] for i in items}
+    check("gear-rules: storm (collins) fires rain+cold+kayak-safety",
+          names == {"rain jacket / dry bags", "warm layers",
+                    "kayak safety (PFD, bilge pump)"}, f"(got {sorted(names)})")
+    check("gear-rules: every suggestion carries a non-empty reason",
+          all(isinstance(i.get("reason"), str) and i["reason"].strip() for i in items),
+          f"(got {items!r:.200})")
+    check("gear-rules: reasons cite the triggering numbers",
+          any("80%" in i["reason"] for i in items)
+          and any("38" in i["reason"] for i in items)
+          and any("14" in i["reason"] for i in items), f"(got {[i['reason'] for i in items]})")
+
+    loon_items = gear_rules.derive_conditional_gear("loon-lake", storm)
+    loon_names = {i["item"] for i in loon_items}
+    check("gear-rules: no-kayak water swaps kayak-safety for no-go",
+          "strong wind — consider no-go" in loon_names
+          and "kayak safety (PFD, bilge pump)" not in loon_names,
+          f"(got {sorted(loon_names)})")
+
+    nbb_low = {**storm["weather"], "temp_min_f": 55.0, "wind_peak_mph": 5.0,
+               "precip_prob_max_pct": 10}
+    nbb = {"weather": nbb_low,
+           "water_level": {"value": 1874.9, "unit": "ft", "label": "Pool stage"},
+           "flow": None}
+    nbb_items = gear_rules.derive_conditional_gear("new-bullards-bar", nbb)
+    nbb_names = {i["item"] for i in nbb_items}
+    check("gear-rules: NBB below normal pool -> waders/access caution",
+          "waders / access caution" in nbb_names and len(nbb_items) == 1,
+          f"(got {sorted(nbb_names)})")
+    check("gear-rules: NBB reason cites the 1,900 ft normal pool",
+          any("1,900" in i["reason"] for i in nbb_items), f"(got {[i['reason'] for i in nbb_items]})")
+    nbb_high = {"weather": nbb_low,
+                "water_level": {"value": 1905.0, "unit": "ft", "label": "Pool stage"},
+                "flow": None}
+    check("gear-rules: NBB at/above normal pool -> no low-level item",
+          gear_rules.derive_conditional_gear("new-bullards-bar", nbb_high) == [],
+          "(expected empty)")
+
+    sac_high = {"weather": calm["weather"], "water_level": None,
+                "flow": {"value": 9000.0, "unit": "cfs", "label": "Discharge"}}
+    sac_items = gear_rules.derive_conditional_gear("sacramento-river-westport", sac_high)
+    check("gear-rules: Sac high flow -> strong-current safety item",
+          [i["item"] for i in sac_items] == ["safety: strong current"],
+          f"(got {[i['item'] for i in sac_items]})")
+    sac_mod = {"weather": calm["weather"], "water_level": None,
+               "flow": {"value": 5800.0, "unit": "cfs", "label": "Discharge"}}
+    check("gear-rules: Sac moderate flow (5,800 cfs) -> no item",
+          gear_rules.derive_conditional_gear("sacramento-river-westport", sac_mod) == [],
+          "(expected empty)")
+
+    check("gear-rules: calm conditions -> no false positives",
+          gear_rules.derive_conditional_gear("collins-lake", calm) == [],
+          "(expected empty)")
+    check("gear-rules: missing conditions -> no crash, no items",
+          gear_rules.derive_conditional_gear("collins-lake", None) == []
+          and gear_rules.derive_conditional_gear("collins-lake", {}) == [],
+          "(expected empty)")
+
+    # Boundaries: thresholds are inclusive (<= / >=).
+    b_cold = {"weather": {"temp_min_f": 45.0, "wind_peak_mph": 0.0,
+                          "precip_prob_max_pct": 0}, "water_level": None, "flow": None}
+    check("gear-rules: exactly 45°F low fires warm layers (inclusive)",
+          [i["item"] for i in gear_rules.derive_conditional_gear("collins-lake", b_cold)]
+          == ["warm layers"], "(expected warm layers only)")
+    b_wind = {"weather": {"temp_min_f": 60.0, "wind_peak_mph": 10.0,
+                          "precip_prob_max_pct": 0}, "water_level": None, "flow": None}
+    check("gear-rules: exactly 10 mph wind fires kayak safety (inclusive)",
+          [i["item"] for i in gear_rules.derive_conditional_gear("collins-lake", b_wind)]
+          == ["kayak safety (PFD, bilge pump)"], "(expected kayak safety only)")
+    b_rain = {"weather": {"temp_min_f": 60.0, "wind_peak_mph": 0.0,
+                          "precip_prob_max_pct": 50}, "water_level": None, "flow": None}
+    check("gear-rules: exactly 50% rain prob fires rain item (inclusive)",
+          [i["item"] for i in gear_rules.derive_conditional_gear("collins-lake", b_rain)]
+          == ["rain jacket / dry bags"], "(expected rain item only)")
+
+
 def run_conditions_hermetic():
     """Hermetic live-conditions checks (no network): IV parsing, forced-outage
     degradation, pressure trend classification, alert derivation + dedupe."""
@@ -437,6 +533,161 @@ def run_conditions_hermetic():
           f"({a!r} vs {a_again!r})")
 
 
+def test_briefing(base, user_id):
+    """Consolidated per-trip briefing: plan + conditions + gear (task t_de445f02).
+
+    Endpoint shape for a PLANNED trip (future date -> forecast horizon) and
+    a LOGGED trip (past date -> last-known snapshot), plus 404 handling.
+    Conditional gear items are pinned hermetically in run_gear_rules_hermetic
+    (forced fixtures); here we verify the composed payload wires them through.
+    """
+    st, waters = req("GET", "/api/waters")
+    by_slug = {w["slug"]: w for w in waters}
+    sac, collins = by_slug["sacramento-river-westport"], by_slug["collins-lake"]
+    # +1 day: always inside the 48 h Open-Meteo window (window = [now, now+48h]).
+    future = (date.today() + timedelta(days=1)).isoformat()
+    past = (date.today() - timedelta(days=16)).isoformat()
+
+    # --- planned trip, future date, explicit target --------------------------
+    st, trip = req("POST", "/api/trips", {
+        "user_id": user_id, "water_id": sac["id"], "date": future,
+        "target_species": "chinook salmon", "status": "planned",
+    })
+    check("briefing: planned trip created", st == 201, f"(got {st})")
+    tid = trip["id"]
+
+    st, bf = req("GET", f"/api/trips/{tid}/briefing")
+    check("briefing: GET /api/trips/<id>/briefing -> 200", st == 200, f"(got {st})")
+    ok_shape = (isinstance(bf, dict) and bf.get("trip_id") == tid
+                and bf.get("water", {}).get("slug") == "sacramento-river-westport"
+                and all(k in bf for k in ("plan", "conditions", "gear")))
+    check("briefing: payload shape (trip_id + water + plan/conditions/gear)", ok_shape,
+          f"(keys={sorted(bf) if isinstance(bf, dict) else type(bf)!r})")
+
+    plan = bf.get("plan") or {}
+    sp = plan.get("species") or []
+    check("briefing: plan.species non-empty, each {name, sprite}",
+          bool(sp) and all(isinstance(s.get("name"), str) and s["name"]
+                           and isinstance(s.get("sprite"), str) and s["sprite"].endswith(".png")
+                           for s in sp), f"(got {sp!r:.160})")
+    check("briefing: target species ranks first (chinook)",
+          sp and sp[0]["name"] == "chinook salmon", f"(got {sp[:1]!r})")
+    check("briefing: sprite matches canonical species-icons table",
+          sp and sp[0]["sprite"] == species_icons.resolve_sprite(sp[0]["name"])
+          == "salmon.png", f"(got {sp[0]['sprite'] if sp else None!r})")
+    regs = plan.get("regs") or {}
+    reg_names = [r.get("species", "") for r in regs.get("species") or []]
+    check("briefing: plan.regs present with chinook limits",
+          isinstance(regs, dict) and any(n.startswith("chinook") for n in reg_names),
+          f"(got {reg_names!r})")
+    check("briefing: plan.stocking present", isinstance(plan.get("stocking"), dict),
+          f"(got {type(plan.get('stocking')).__name__})")
+    tac = plan.get("tactics") or {}
+    check("briefing: plan.tactics carries rig/lures/tips (top pick)",
+          isinstance(tac, dict) and tac.get("rod") and tac.get("lures") and tac.get("tips"),
+          f"(got {tac!r:.160})")
+
+    conds = bf.get("conditions") or {}
+    VALID_PHASES = {"new moon", "waxing crescent", "first quarter", "waxing gibbous",
+                    "full moon", "waning gibbous", "last quarter", "waning crescent"}
+    check("briefing: conditions keys (weather/water_level/flow/pressure/lunar/generated_at)",
+          all(k in conds for k in ("date", "weather", "water_level", "flow",
+                                   "pressure", "lunar", "generated_at")),
+          f"(keys={sorted(conds) if isinstance(conds, dict) else type(conds).__name__})")
+    check("briefing: conditions.date echoes the trip date",
+          conds.get("date") == future, f"(got {conds.get('date')!r})")
+    ln = conds.get("lunar") or {}
+    check("briefing: lunar phase valid + illumination 0-100",
+          ln.get("phase") in VALID_PHASES and isinstance(ln.get("illumination_pct"), int)
+          and 0 <= ln["illumination_pct"] <= 100, f"(got {ln!r})")
+    wxd = conds.get("weather") or {}
+    check("briefing: weather block shaped (temp/wind/rain/sun/horizon keys)",
+          all(k in wxd for k in ("temp_min_f", "temp_max_f", "wind_peak_mph",
+                                 "precip_prob_max_pct", "sunrise", "sunset", "horizon")),
+          f"(keys={sorted(wxd) if isinstance(wxd, dict) else type(wxd).__name__})")
+    if wxd.get("source") == "open-meteo":
+        check("briefing: future trip date inside 48h forecast window -> horizon=forecast",
+              wxd.get("horizon") == "forecast", f"(got {wxd.get('horizon')!r})")
+    for key in ("water_level", "flow"):
+        v = conds.get(key)
+        check(f"briefing: conditions.{key} is null or a proper USGS view",
+              v is None or (isinstance(v, dict) and "value" in v and "status" in v
+                            and "label" in v and "as_of_iso" in v),
+              f"(got {v!r:.160})")
+    pr = conds.get("pressure")
+    check("briefing: pressure is null or {hpa,inhg,trend}",
+          pr is None or (isinstance(pr, dict) and "hpa" in pr and "inhg" in pr
+                         and pr.get("trend") in ("rising", "falling", "steady", "unknown")),
+          f"(got {pr!r:.160})")
+
+    gear = bf.get("gear") or {}
+    base_items = gear.get("base")
+    cond_items = gear.get("conditional")
+    check("briefing: gear.base non-empty flat checklist",
+          isinstance(base_items, list) and base_items
+          and all(isinstance(x, str) and x.strip() for x in base_items),
+          f"(got {base_items!r:.160})")
+    check("briefing: gear.conditional is a list of {item, reason}",
+          isinstance(cond_items, list)
+          and all(isinstance(c, dict) and isinstance(c.get("item"), str) and c["item"]
+                  and isinstance(c.get("reason"), str) and c["reason"] for c in cond_items),
+          f"(got {cond_items!r:.160})")
+
+    # --- logged trip, past date ----------------------------------------------
+    st, trip2 = req("POST", "/api/trips", {
+        "user_id": user_id, "water_id": collins["id"], "date": past,
+        "target_species": "rainbow trout", "status": "completed",
+    })
+    check("briefing: logged trip created", st == 201, f"(got {st})")
+    st, bf2 = req("GET", f"/api/trips/{trip2['id']}/briefing")
+    check("briefing: logged (past-date) trip -> 200", st == 200, f"(got {st})")
+    conds2 = bf2.get("conditions") or {}
+    check("briefing: logged trip conditions dated to the past trip date",
+          conds2.get("date") == past, f"(got {conds2.get('date')!r})")
+    wxd2 = conds2.get("weather") or {}
+    if wxd2.get("source") == "open-meteo":
+        check("briefing: past trip date -> horizon=last_known (snapshot labelled)",
+              wxd2.get("horizon") == "last_known", f"(got {wxd2.get('horizon')!r})")
+    sp2 = (bf2.get("plan") or {}).get("species") or []
+    check("briefing: logged trip honours its target species",
+          sp2 and sp2[0]["name"] == "rainbow trout"
+          and sp2[0]["sprite"] == "rainbow-trout.png", f"(got {sp2[:1]!r})")
+    # Collins has no USGS gauge: level/flow must be null, never fabricated.
+    check("briefing: ungaged water -> water_level/flow null (never fabricated)",
+          conds2.get("water_level") is None and conds2.get("flow") is None,
+          f"(got level={conds2.get('water_level')!r:.80} flow={conds2.get('flow')!r:.80})")
+
+    # --- 404 + cleanup ---------------------------------------------------------
+    st, _ = req("GET", "/api/trips/99999999/briefing")
+    check("briefing: unknown trip -> 404", st == 404, f"(got {st})")
+    st, _ = req("DELETE", f"/api/trips/{trip2['id']}")
+    check("briefing: cleanup logged trip", st == 204, f"(got {st})")
+    st, _ = req("DELETE", f"/api/trips/{tid}")
+    check("briefing: cleanup planned trip", st == 204, f"(got {st})")
+
+
+def test_ui_wiring(base):
+    """Briefing UI: the Trips tab renders the briefing (sprites, conditions,
+    gear checklist) from the new endpoint — wiring markers in app.js/css."""
+    js_src = open(os.path.join(_REPO_ROOT, "app", "static", "app.js"), encoding="utf-8").read()
+    css_src = open(os.path.join(_REPO_ROOT, "app", "static", "style.css"), encoding="utf-8").read()
+    check("UI: briefing fetch wired to /api/trips/<id>/briefing",
+          "`/api/trips/${body.dataset.briefing}/briefing`" in js_src,
+          "(endpoint call missing in app.js)")
+    check("UI: trip card carries a lazy briefing panel",
+          'class="briefing-body"' in js_src and 'data-briefing="' in js_src
+          and 'class="plan briefing"' in js_src,
+          "(briefing <details> missing from the trip card template)")
+    check("UI: briefing renders targets with sprites + conditions + gear checklist",
+          "renderBriefing" in js_src and "spriteImg(s.name)" in js_src
+          and "bf-cond-item" in js_src and "bf-base" in js_src,
+          "(renderer missing its three blocks)")
+    check("UI: conditional items highlighted with reasons in CSS",
+          ".bf-cond-item" in css_src and ".bf-cond-item .reason" in css_src
+          and ".briefing-body" in css_src,
+          "(briefing styles missing)")
+
+
 def main():
     print(f"Chasing Tail(s) smoke test -> {BASE}")
 
@@ -461,6 +712,7 @@ def main():
     # 0b. live conditions: hermetic (no network) — IV parsing, forced-outage
     # degradation, pressure trend, alert derivation + dedupe signatures.
     run_conditions_hermetic()
+    run_gear_rules_hermetic()
 
     # 1. healthz
     st, body = req("GET", "/healthz")
@@ -1002,6 +1254,10 @@ def main():
 
     # 12. visual assets (fish-tail favicon + species pixel-art sprites).
     test_assets()
+
+    # 13. trip briefing (task t_de445f02): consolidated plan + conditions + gear.
+    test_briefing(BASE, user_id)
+    test_ui_wiring(BASE)
 
     # 10. cleanup: delete catch + trip
     st, _ = req("DELETE", f"/api/catches/{catch_id}")
