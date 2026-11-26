@@ -64,6 +64,50 @@ function fmtTs(iso) {
   catch { return iso; }
 }
 
+// ---------- species sprites (pixel art) ----------
+// Maps a species name to a pixel-art sprite under /static/img/fish/.
+// Normalize (lowercase + trim), then the FIRST matching keyword wins;
+// anything unrecognized falls back to generic.png so the UI never shows a
+// broken image. The table is mirrored server-side in
+// app/services/species_icons.py (backs /api/species-icon/<name>) — keep the
+// two in sync (the smoke test enforces this).
+const SPRITE_BASE = "/static/img/fish/";
+const SPRITE_FALLBACK = "generic.png";
+const SPRITE_KEYWORDS = [
+  ["rainbow", "rainbow-trout.png"],
+  ["steelhead", "steelhead.png"],
+  ["coho", "steelhead.png"],
+  ["chinook", "salmon.png"],
+  ["king", "salmon.png"],
+  ["salmon", "salmon.png"],
+  ["brown trout", "brown-trout.png"],
+  ["largemouth", "largemouth-bass.png"],
+  ["smallmouth", "smallmouth-bass.png"],
+  ["crappie", "crappie.png"],
+  ["catfish", "catfish.png"],
+  ["channel", "catfish.png"],
+  ["blue cat", "catfish.png"],
+  ["bluegill", "bluegill.png"],
+  ["sunfish", "bluegill.png"],
+  ["sturgeon", "sturgeon.png"],
+  ["carp", "carp.png"],
+];
+
+function speciesSprite(name) {
+  const n = String(name ?? "").toLowerCase().trim();
+  for (const [kw, file] of SPRITE_KEYWORDS) {
+    if (n.includes(kw)) return file;
+  }
+  return SPRITE_FALLBACK;
+}
+
+// Inline sprite next to a species name (46x26 base; CSS scales it crisply
+// with image-rendering:pixelated). Alt text = the species name.
+function spriteImg(name) {
+  return `<img class="fish-sprite" src="${SPRITE_BASE + speciesSprite(name)}" ` +
+    `alt="${esc(name)}" width="46" height="26" loading="lazy">`;
+}
+
 // =============================================================================
 // Live conditions: USGS headline + barometer + dismissible alerts
 // (GET /api/conditions/<slug>; server-side cached 15–30 min per upstream).
@@ -324,7 +368,7 @@ function renderPlanBody(body, p) {
   let html = "";
   if (top3.length) {
     html += `<div class="plan-picks">${top3.map((s, i) =>
-      `${i + 1}. <strong>${esc(s.species)}</strong> <span class="meta">(${esc(s.activity)}, score ${s.score})</span>`
+      `${i + 1}. ${spriteImg(s.species)}<strong>${esc(s.species)}</strong> <span class="meta">(${esc(s.activity)}, score ${s.score})</span>`
     ).join("<br>")}</div>`;
   }
   if (top && top.limits) {
@@ -434,7 +478,7 @@ $("#plan-form").addEventListener("submit", async (e) => {
       </div>
       ${p.suggestions.map((s, i) => `
         <div class="card sugg">
-          <h3>${i + 1}. ${esc(s.species)} <span class="chip planned">${esc(s.activity)}</span>${s.winter_focus ? ' <span class="chip planned">winter focus</span>' : ""}</h3>
+          <h3>${i + 1}. ${spriteImg(s.species)}${esc(s.species)} <span class="chip planned">${esc(s.activity)}</span>${s.winter_focus ? ' <span class="chip planned">winter focus</span>' : ""}</h3>
           <div class="meta">${esc(s.rod || "")}</div>
           <ul>
             ${s.limits ? `<li><strong>Limits:</strong> ${esc(s.limits)}${s.limits_authority ? ` <span class="meta">(${esc(s.limits_authority)})</span>` : ""}</li>` : ""}

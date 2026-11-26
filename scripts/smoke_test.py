@@ -39,6 +39,16 @@ Verifies the acceptance criteria:
       - hermetic (no network): IV wire-shape parsing, forced-outage
         degradation (stale cache served / no_data — never a 500), pressure
         trend classification, alert derivation + stable dedupe signatures
+  12. visual assets (task t_c90d8d5a):
+      - fish-tail favicon: /favicon.svg (root route) + /static/favicon.svg
+        -> 200 image/svg+xml; PNG fallback /icons/favicon-32.png +
+        /static/icons/* -> 200 image/png (magic bytes verified)
+      - species sprites: /static/img/fish/{salmon,rainbow-trout,generic}.png
+        -> 200 image/png; all 12 sprites + 4 icons present on disk
+      - species->sprite mapping via /api/species-icon/<name>: every keyword
+        (incl. coho/channel/blue-cat/sunfish aliases) resolves correctly,
+        unrecognized names fall back to generic.png (always 200), and the
+        client-side JS table in app/static/app.js mirrors the server table
 Exit code 0 = all pass.
 """
 import json
@@ -55,6 +65,7 @@ if _REPO_ROOT not in sys.path:
 # Pure stdlib module (app/__init__.py and app/services/__init__.py are
 # docstring-only), so this import works without fastapi installed.
 from app.services.lunar import moon_phase
+from app.services import species_icons
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8090"
 PASS, FAIL = 0, 0
@@ -117,6 +128,16 @@ def req_raw(method, path, text, ctype="text/plain", timeout=90):
 def as_dict(x):
     """Coerce a response body to dict (non-JSON error bodies arrive as str)."""
     return x if isinstance(x, dict) else {}
+
+
+def req_bin(path, timeout=90):
+    """GET returning (status, raw_bytes, content_type) — for binary assets."""
+    r = urllib.request.Request(BASE + path, method="GET")
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            return resp.status, resp.read(), (resp.headers.get("Content-Type") or "")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), (e.headers.get("Content-Type") or "")
 
 
 def test_conditions(base):
@@ -185,6 +206,100 @@ def test_conditions(base):
     if st == 200:
         check("recommend live: weather_notes is a list",
               isinstance(as_dict(plan).get("weather_notes"), list))
+
+
+def test_assets():
+    """12. Visual assets: fish-tail favicon + species pixel-art sprites."""
+    from urllib.parse import quote
+
+    static_root = os.path.join(_REPO_ROOT, "app", "static")
+
+    # --- favicon: fish-tail SVG at /favicon.svg (root route) and /static ---
+    st, body, ct = req_bin("/favicon.svg")
+    check("favicon: GET /favicon.svg -> 200 image/svg+xml",
+          st == 200 and "svg" in ct.lower() and b"<svg" in body[:2048],
+          f"(got {st} ct={ct!r} body={body[:60]!r})")
+    st2, body2, _ = req_bin("/static/favicon.svg")
+    check("favicon: /static/favicon.svg -> 200 (same file via static mount)",
+          st2 == 200 and body2 == body, f"(got {st2} len={len(body2)}/{len(body)})")
+    st3, body3, ct3 = req_bin("/favicon.ico")
+    check("favicon: GET /favicon.ico -> 200 (302-redirects to the SVG tail)",
+          st3 == 200 and "svg" in ct3.lower() and body3 == body,
+          f"(got {st3} ct={ct3!r})")
+
+    # --- raster icons: PNG fallback link target + PWA icons ---
+    for path in ("/icons/favicon-32.png", "/static/icons/icon-192.png"):
+        st, body, ct = req_bin(path)
+        check(f"icons: GET {path} -> 200 image/png (magic bytes)",
+              st == 200 and "png" in ct.lower() and body.startswith(b"\x89PNG\r\n\x1a\n"),
+              f"(got {st} ct={ct!r} head={body[:8]!r})")
+
+    # --- species sprites: a couple served + fallback ---
+    for fname in ("salmon.png", "rainbow-trout.png", "generic.png"):
+        st, body, ct = req_bin(f"/static/img/fish/{fname}")
+        check(f"sprites: GET /static/img/fish/{fname} -> 200 image/png (magic bytes)",
+              st == 200 and "png" in ct.lower() and body.startswith(b"\x89PNG\r\n\x1a\n"),
+              f"(got {st} ct={ct!r} head={body[:8]!r})")
+
+    # --- full asset set present on disk (guards a half-deployed asset pack) ---
+    sprites = sorted(p for p in os.listdir(os.path.join(static_root, "img", "fish"))
+                     if p.endswith(".png"))
+    expect_sprites = sorted({sprite for _, sprite in species_icons.SPRITE_KEYWORDS})
+    expect_sprites.append(species_icons.SPRITE_FALLBACK)
+    check("assets on disk: all 12 sprites present in app/static/img/fish/",
+          sprites == sorted(set(expect_sprites)), f"(have {sprites})")
+    icons = sorted(os.listdir(os.path.join(static_root, "icons")))
+    check("assets on disk: 4 raster icons present in app/static/icons/",
+          icons == ["favicon-32.png", "favicon-48.png", "icon-192.png", "icon-512.png"],
+          f"(have {icons})")
+
+    # --- species->sprite mapping via /api/species-icon/<name> ---
+    mapping_cases = [
+        ("rainbow trout", "rainbow-trout.png"),
+        ("Steelhead", "steelhead.png"),
+        ("Coho", "steelhead.png"),
+        ("Chinook Salmon", "salmon.png"),
+        ("King Salmon", "salmon.png"),
+        ("brown trout", "brown-trout.png"),
+        ("largemouth bass", "largemouth-bass.png"),
+        ("smallmouth bass", "smallmouth-bass.png"),
+        ("Crappie", "crappie.png"),
+        ("Channel Catfish", "catfish.png"),
+        ("Blue Cat", "catfish.png"),
+        ("bluegill", "bluegill.png"),
+        ("Sunfish", "bluegill.png"),
+        ("White Sturgeon", "sturgeon.png"),
+        ("Common Carp", "carp.png"),
+        # Unrecognized -> generic fallback (never a broken image, never 4xx).
+        ("spotted bass", "generic.png"),
+        ("kokanee", "generic.png"),
+    ]
+    for name, want in mapping_cases:
+        st, body = req("GET", f"/api/species-icon/{quote(name)}")
+        body = as_dict(body)
+        check(f"species-icon: {name!r} -> {want}",
+              st == 200 and body.get("sprite") == want
+              and body.get("src") == f"/static/{species_icons.SPRITE_DIR}/{want}",
+              f"(got {st} {body!r:.120})")
+
+    # Hermetic edges: normalization + empty/None fall back to generic.
+    check("species-icon (hermetic): normalization + empty/None -> generic.png",
+          species_icons.resolve_sprite("  COHO  ") == "steelhead.png"
+          and species_icons.resolve_sprite("") == species_icons.SPRITE_FALLBACK
+          and species_icons.resolve_sprite(None) == species_icons.SPRITE_FALLBACK)
+
+    # --- client-side JS table mirrors the server table (drift guard) ---
+    js_src = open(os.path.join(static_root, "app.js"), encoding="utf-8").read()
+    missing = [f"[{kw!r}, {sprite!r}]" for kw, sprite in species_icons.SPRITE_KEYWORDS
+               if f'["{kw}", "{sprite}"]' not in js_src]
+    check("JS mirror: app.js SPRITE_KEYWORDS matches the server table (17 pairs)",
+          not missing, f"(missing: {missing})")
+
+    # --- index.html wires the fish-tail favicon (SVG + PNG fallback) ---
+    html_src = open(os.path.join(static_root, "index.html"), encoding="utf-8").read()
+    check("index.html: <link rel=icon> -> /favicon.svg (svg+xml) + /icons/favicon-32.png",
+          'href="/favicon.svg" type="image/svg+xml"' in html_src
+          and 'href="/icons/favicon-32.png" sizes="32x32" type="image/png"' in html_src)
 
 
 def run_conditions_hermetic():
@@ -884,6 +999,9 @@ def main():
 
     # 11. live conditions (USGS IV + barometer + alerts).
     test_conditions(BASE)
+
+    # 12. visual assets (fish-tail favicon + species pixel-art sprites).
+    test_assets()
 
     # 10. cleanup: delete catch + trip
     st, _ = req("DELETE", f"/api/catches/{catch_id}")

@@ -9,11 +9,12 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
 from .routers import catches, chat, community, conditions, gear, recommend, trips, users, waters, weather
+from .services import species_icons
 
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
 log = logging.getLogger(__name__)
@@ -72,5 +73,42 @@ def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
-# Everything else under /static (app.js, style.css, icons...).
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon_svg():
+    """Browser-tab icon: the fish tail (SVG). Served at the root so the
+    <link rel=icon> href stays short; the same file is also under /static."""
+    p = STATIC_DIR / "favicon.svg"
+    if not p.is_file():  # defensive: 404 instead of a 500 if the asset is missing
+        return JSONResponse({"detail": "favicon not found"}, status_code=404)
+    return FileResponse(p, media_type="image/svg+xml")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon_ico():
+    """Legacy .ico probe (some browsers/tools ask before honoring <link>):
+    redirect to the SVG tail so it never 404s in the logs."""
+    return RedirectResponse("/favicon.svg", status_code=302)
+
+
+@app.get("/api/species-icon/{name}")
+def species_icon(name: str):
+    """Resolve a species name to its pixel-art sprite (Plan tab icons).
+
+    Mirrors the client-side table in app/static/app.js (the UI resolves
+    sprites locally; this endpoint exists so the mapping is exercisable
+    from the smoke test and future server-side consumers). Unrecognized
+    names fall back to generic.png — always 200, never a broken image.
+    """
+    sprite = species_icons.resolve_sprite(name)
+    return {
+        "name": name,
+        "sprite": sprite,
+        "src": f"/static/{species_icons.SPRITE_DIR}/{sprite}",
+    }
+
+
+# Everything else under /static (app.js, style.css, sprites...).
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Raster icons (fish-tail favicons/PWA icons) at /icons — backs the
+# <link rel=icon> PNG fallback in index.html; same files live under /static.
+app.mount("/icons", StaticFiles(directory=STATIC_DIR / "icons"), name="icons")
