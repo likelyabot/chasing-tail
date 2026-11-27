@@ -24,6 +24,17 @@ $$("#tabs button").forEach((btn) =>
 );
 
 // ---------- api helpers ----------
+// Drop the service worker's cached copies of an API family after a
+// successful mutation, so the immediate re-fetch goes to the network.
+// Without this, the SW's young-cache SWR path serves pre-write data for up
+// to SWR_MAX_AGE_MS (verified 2026-11-27: spots/gear/community all showed
+// stale state right after a successful write).
+function invalidateApiFamily(prefix) {
+  if (!("serviceWorker" in navigator)) return;
+  const ctl = navigator.serviceWorker.controller;
+  if (ctl) ctl.postMessage({ type: "ct:invalidate-family", prefix });
+}
+
 async function api(path, opts = {}) {
   const r = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -42,6 +53,21 @@ async function api(path, opts = {}) {
       }
     } catch {}
     throw new Error(detail);
+  }
+  if (opts.method && opts.method.toUpperCase() !== "GET") {
+    // Successful mutation: invalidate the affected API family in the SW.
+    // Family = /api/<collection> (first path segment after /api), which
+    // covers the collection GET, item GETs, and nested reads (e.g.
+    // /api/trips/<id>/photos). /api/photos writes also dirty the trip
+    // photo lists, so invalidate /api/trips too.
+    try {
+      const seg = new URL(path, location.origin).pathname.split("/");
+      const fam = "/api/" + (seg[2] || "");
+      if (fam.startsWith("/api/")) {
+        invalidateApiFamily(fam);
+        if (fam === "/api/photos") invalidateApiFamily("/api/trips");
+      }
+    } catch (_) { /* opaque path — nothing to invalidate */ }
   }
   return r.status === 204 ? null : r.json();
 }
@@ -192,9 +218,13 @@ function speciesSprite(name) {
 
 // Inline sprite next to a species name (46x26 base; CSS scales it crisply
 // with image-rendering:pixelated). Alt text = the species name.
+// Deliberately NOT loading="lazy": sprites are ~800 B each, laziness buys
+// nothing, and dynamically-inserted lazy images can stall unscheduled in
+// some engines (verified headless-Chromium 145: panel sprites stayed
+// pending in-viewport until the attribute was removed).
 function spriteImg(name) {
   return `<img class="fish-sprite" src="${SPRITE_BASE + speciesSprite(name)}" ` +
-    `alt="${esc(name)}" width="46" height="26" loading="lazy">`;
+    `alt="${esc(name)}" width="46" height="26">`;
 }
 
 // Lunar phase glyphs (shared by the Weather tab and trip briefings).
@@ -378,6 +408,11 @@ async function loadTrips() {
     </div>`).join("");
   for (const t of trips) renderCatches(t.id);
   for (const t of trips) renderPhotos(t.id);
+  // <details> toggle does not bubble in Chromium — bind per node (the old
+  // delegated listener never fired there; see onTripDetailsToggle).
+  for (const d of el.querySelectorAll("details")) {
+    d.addEventListener("toggle", onTripDetailsToggle);
+  }
 }
 
 async function renderCatches(tripId) {
@@ -678,7 +713,13 @@ async function loadBriefingFor(body) {
   }
 }
 
-$("#trip-list").addEventListener("toggle", (e) => {
+// <details> toggle handler for trip cards. Bound PER-NODE at render time
+// (see loadTrips): Chromium does NOT bubble the 'toggle' event (verified
+// 2026-11-27 on HeadlessChrome 145 — a listener on the details fires, a
+// bubble listener on an ancestor does not), so a delegated listener on
+// #trip-list never fires there and the Plan/Briefing panels would stay
+// permanently empty.
+function onTripDetailsToggle(e) {
   const el = e.target instanceof Element ? e.target : null;
   const det = el ? el.closest("details") : null;
   if (!det || !det.open) return;
@@ -703,7 +744,7 @@ $("#trip-list").addEventListener("toggle", (e) => {
     return;
   }
   loadPlanFor(body);
-});
+}
 
 $("#trip-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -792,6 +833,9 @@ async function uploadPhotos(tripId, files) {
         throw new Error(detail);
       }
       ok++;
+      // Raw fetch above bypasses api()'s hook: the photo list lives under
+      // the trips family — drop it so renderPhotos() below sees the upload.
+      invalidateApiFamily("/api/trips");
     } catch (err) {
       alert(`Photo "${file.name}" failed: ${err.message}`);
     }
@@ -1081,6 +1125,15 @@ $("#mp-list").addEventListener("click", async (e) => {
 
 // ---------- plan ----------
 let planGeneration = 0;
+
+// Plan-tab initializer (invoked on tab activation, mirroring the sibling
+// tabs' loaders). The form itself is static HTML populated by boot(); this
+// keeps the date default fresh. NOTE: the function must exist — the tab
+// handler calls it unconditionally (a missing definition threw a Reference
+// Error on every Plan-tab click).
+function loadPlan() {
+  if (!$("#pf-date").value) $("#pf-date").value = new Date().toISOString().slice(0, 10);
+}
 
 $("#plan-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1522,6 +1575,9 @@ async function gearApi(method) {
     } catch (_) { /* non-JSON error body — keep statusText */ }
     throw new Error(detail);
   }
+  // Successful mutation: invalidate the gear family in the SW so the
+  // immediate re-fetch (below or in callers) sees post-save state.
+  invalidateApiFamily("/api/gear");
   // 2xx handling: DELETE is 204 (null); PUT echoes the saved payload. If a
   // 2xx ever arrives with an empty/non-JSON body, refetch instead of letting
   // res.json() throw — callers must always receive a renderable payload.
@@ -1677,6 +1733,7 @@ $("#cm-fb-import-btn").addEventListener("click", async () => {
     }
     ta.value = "";
     sum.textContent = `Imported ${body.imported}, skipped ${body.skipped} (batch ${body.batch_id})`;
+    invalidateApiFamily("/api/community"); // raw fetch above bypasses api()'s hook
     await loadCommunity();
   } catch (err) {
     sum.textContent = "Import failed: " + err.message;

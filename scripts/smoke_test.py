@@ -402,6 +402,28 @@ def test_assets():
     check("JS mirror: app.js SPRITE_KEYWORDS matches the server table (17 pairs)",
           not missing, f"(missing: {missing})")
 
+    # --- review-loop regression guards (2026-11-27, task t_96f2ffb1) ---
+    # (1) The tab handler calls loadPlan() on Plan-tab activation; a missing
+    #     definition threw an uncaught ReferenceError on every click.
+    check("JS wiring: app.js defines loadPlan() (Plan-tab loader hook)",
+          "function loadPlan()" in js_src)
+    # (2) Chromium does NOT bubble <details> 'toggle' (verified HeadlessChrome
+    #     145): the delegated #trip-list listener never fired, leaving the
+    #     per-card Plan/Briefing panels permanently empty. Binding must be
+    #     per-node at render time.
+    check("JS wiring: trip-card <details> toggle bound per-node (Chromium no-bubble)",
+          'd.addEventListener("toggle", onTripDetailsToggle)' in js_src
+          and "function onTripDetailsToggle(" in js_src)
+    # (3) Post-write SW invalidation: young-cache SWR served pre-write data
+    #     after mutations (spots/gear/community). App must ask the SW to drop
+    #     the dirty family, and the SW must honor it.
+    sw_src = open(os.path.join(static_root, "sw.js"), encoding="utf-8").read()
+    check("JS wiring: SW post-write invalidation (ct:invalidate-family both sides)",
+          '"ct:invalidate-family"' in js_src
+          and "function invalidateApiFamily(" in js_src
+          and "ct:invalidate-family" in sw_src
+          and "caches.open(RUNTIME_CACHE)" in sw_src)
+
     # --- index.html wires the fish-tail favicon (SVG + PNG fallback) ---
     html_src = open(os.path.join(static_root, "index.html"), encoding="utf-8").read()
     check("index.html: <link rel=icon> -> /favicon.svg (svg+xml) + /icons/favicon-32.png",

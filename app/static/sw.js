@@ -23,6 +23,11 @@
  *             - Leaflet CDN css/js ... stale-while-revalidate (pinned 1.9.4)
  *   NON-GET   requests are NEVER intercepted (mutations must reach the
  *             server; a silent cache hit on a POST would lie to the UI).
+ *             After a successful mutation the app posts
+ *             {type:"ct:invalidate-family", prefix} and the matching
+ *             runtime-cache entries are dropped, so the immediate re-fetch
+ *             goes to the network (young-cache SWR must not serve
+ *             pre-write data).
  *
  * Updates: bump CT_VERSION on any deploy that changes the shell. The SW
  * script itself is served no-cache, so the browser notices the new script,
@@ -31,7 +36,7 @@
  */
 "use strict";
 
-const CT_VERSION = "1";
+const CT_VERSION = "2";
 const SHELL_CACHE = `ct-shell-${CT_VERSION}`;
 const RUNTIME_CACHE = `ct-runtime-${CT_VERSION}`;
 const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
@@ -69,6 +74,41 @@ self.addEventListener("activate", (event) => {
         keys.filter((k) => !CURRENT_CACHES.includes(k)).map((k) => caches.delete(k))
       );
       await self.clients.claim();
+    })()
+  );
+});
+
+// Post-write invalidation: after a successful mutation the app tells us
+// which API family went dirty. Two mechanisms, because the app's
+// re-fetch can arrive BEFORE this handler's async delete completes:
+//   1. DIRTY_FAMILIES — while a family is dirty, its GETs go network-first
+//      regardless of cache age (cache fallback only if the network fails).
+//      Cleared once a fresh response for the family is stored.
+//   2. the cached entries are dropped outright (belt and suspenders).
+// Scoped to the family (first path segment after /api) — other families'
+// offline data (weather, conditions, other waters) is untouched.
+const DIRTY_FAMILIES = new Set();
+
+self.addEventListener("message", (event) => {
+  const msg = event.data || {};
+  if (msg.type !== "ct:invalidate-family" || typeof msg.prefix !== "string") return;
+  DIRTY_FAMILIES.add(msg.prefix);
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(RUNTIME_CACHE);
+      const keys = await cache.keys();
+      await Promise.all(
+        keys
+          .filter((k) => {
+            try {
+              const p = new URL(k.url).pathname;
+              return p === msg.prefix || p.startsWith(msg.prefix + "/");
+            } catch (_) {
+              return false;
+            }
+          })
+          .map((k) => cache.delete(k, REQ_OPTS))
+      );
     })()
   );
 });
@@ -157,18 +197,37 @@ function announceStale(url) {
 
 /* ---------- strategies --------------------------------------------------- */
 
+// The API family for a request (first path segment after /api) — mirrors
+// the app-side family computation (app.js invalidateApiFamily).
+function apiFamily(req) {
+  try {
+    const seg = new URL(req.url).pathname.split("/");
+    return seg[2] ? "/api/" + seg[2] : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // /api/* GETs: young cache wins (instant), else network-first with a
 // cached fallback (this is the offline path — it announces).
+// DIRTY families (mutated recently, see DIRTY_FAMILIES) skip the
+// young-cache shortcut: the immediate post-write re-fetch must see
+// post-write state, never a pre-write entry.
 async function apiStrategy(req) {
   const cache = await caches.open(RUNTIME_CACHE);
+  const fam = apiFamily(req);
+  const dirty = fam && DIRTY_FAMILIES.has(fam);
   const cached = await cache.match(req, REQ_OPTS);
-  if (cached && cacheAgeMs(cached) <= SWR_MAX_AGE_MS) {
+  if (!dirty && cached && cacheAgeMs(cached) <= SWR_MAX_AGE_MS) {
     revalidate(cache, req);
     return cached;
   }
   try {
     const fresh = await fetch(req);
-    if (storeable(fresh)) cache.put(req, fresh.clone(), REQ_OPTS);
+    if (storeable(fresh)) {
+      cache.put(req, fresh.clone(), REQ_OPTS);
+      if (fam) DIRTY_FAMILIES.delete(fam); // fresh data stored — clean again
+    }
     return fresh;
   } catch (_) {
     if (cached) {
