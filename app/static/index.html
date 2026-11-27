@@ -6,6 +6,12 @@
 <title>Chasing Tail(s) — trip planner</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<!-- PWA: installable (standalone) + offline-capable (sw.js, registered
+     from app.js). The manifest is served at the root by app/main.py. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0e1512">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
 <!-- Leaflet (map tab) via CDN — frontend-only, no build step. If the CDN is
      unreachable the app.js map code degrades to a "needs a connection" note
      + a text spot list, so a missing stylesheet can never break the SPA. -->
@@ -13,6 +19,10 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<!-- Connectivity banner (PWA): "offline — showing cached data" persists
+     while navigator.onLine is false; the SW's "ct:stale" message flashes
+     it transiently on a network blip that fell back to cached API data. -->
+<div id="net-banner" class="net-banner" hidden></div>
 <header>
   <div class="brand">🎣 Chasing Tail(s) <span class="sub">LAN trip planner</span></div>
   <nav id="tabs">

@@ -215,3 +215,18 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 .spot-row:first-child { border-top: 0; }
 .spot-row .pin { color: var(--accent2); }
 .spot-row .grow { flex: 1; min-width: 0; }
+/* ---------- PWA: connectivity banner + regs staleness ---------- */
+/* Sticky above the header (z 5); red = offline, amber = transient stale flash. */
+.net-banner {
+  position: sticky; top: 0; z-index: 100;
+  padding: 8px 16px; font-size: .88rem; text-align: center;
+  background: #5c2622; color: #ffd9d4; border-bottom: 1px solid var(--danger);
+}
+.net-banner[data-kind="stale"] { background: #4a3a14; color: #ffe3ae; border-bottom-color: var(--warn); }
+/* "Regs as of <date>" stamp (meta line) + >12-month staleness banner. */
+.regs-asof { margin: 2px 0 8px; }
+.regs-warn {
+  margin: 0 0 10px; padding: 8px 12px; font-size: .9rem; border-radius: 8px;
+  background: rgba(232, 180, 90, .1); border: 1px solid rgba(232, 180, 90, .45);
+  color: var(--warn);
+}

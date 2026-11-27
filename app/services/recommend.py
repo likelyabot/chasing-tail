@@ -29,6 +29,7 @@ from ..knowledge import (
     WINTER_MONTHS,
     WINTER_TARGETING,
 )
+from . import regs_meta
 
 log = logging.getLogger(__name__)
 
@@ -439,6 +440,9 @@ def recommend(slug: str, date_str: str | None, target_species: str | None,
         "gear": gear,
         # Dossier-sourced context blocks (all traceable — see knowledge.py).
         "regs": {**(regs or {}), "booklet": REGS_BOOKLET} if regs else None,
+        # Staleness stamp for the static regs seeds (as-of date + >12-month
+        # verdict) — drives the "Regs as of <date>" line + warning banner.
+        "regs_meta": regs_meta.regs_stamp(),
         "stocking": STOCKING.get(slug),
         "winter_targeting": winter,
         "reminders": REMINDERS.get(slug, []),

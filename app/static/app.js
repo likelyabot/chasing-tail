@@ -46,6 +46,93 @@ async function api(path, opts = {}) {
   return r.status === 204 ? null : r.json();
 }
 
+// ---------- PWA: service worker + connectivity banner ----------
+// Registration is non-fatal: on insecure origins (plain-HTTP LAN) browsers
+// refuse service workers, and the app still works fully online without the
+// offline layer — a console warning is all the user gets.
+const STALE_FLASH_MS = 5000; // auto-hide for the transient "cached data" flash
+let _netTimer = null;
+
+function setNetBanner(kind) {
+  const el = $("#net-banner");
+  if (!el) return;
+  clearTimeout(_netTimer);
+  if (kind === "offline") {
+    el.textContent = "Offline — showing cached data (last synced before the connection dropped)";
+    el.setAttribute("data-kind", "offline");
+    el.hidden = false;
+  } else if (kind === "stale") {
+    el.textContent = "Showing cached data — connection unstable, refreshing in background";
+    el.setAttribute("data-kind", "stale");
+    el.hidden = false;
+    _netTimer = setTimeout(() => { el.hidden = true; }, STALE_FLASH_MS);
+  } else {
+    el.removeAttribute("data-kind");
+    el.hidden = true;
+  }
+}
+
+function initServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.warn("service worker registration failed:", err);
+    });
+  });
+  // The SW announces (postMessage "ct:stale") when it had to serve a cached
+  // API response because the network failed while the page believed it was
+  // online -> flash the banner briefly.
+  navigator.serviceWorker.ready
+    .then((reg) => {
+      reg.addEventListener("message", (ev) => {
+        if (ev.data && ev.data.type === "ct:stale" && navigator.onLine) setNetBanner("stale");
+      });
+      // Warm the cache with boot data: on the FIRST visit those fetches
+      // happen before the SW takes control, so they bypass the cache and an
+      // immediate offline reload would render an empty app. Refetching once
+      // under control guarantees users/waters/trips/conditions are cached.
+      // Idempotent and cheap (LAN + server-side caches).
+      return Promise.allSettled([
+        api("/api/users").then((u) => { USERS = u; }),
+        api("/api/waters").then((w) => { WATERS = w; }),
+        loadTrips(),
+        loadDashAlerts(),
+      ]);
+    })
+    .catch(() => {});
+}
+
+window.addEventListener("online", () => setNetBanner(navigator.onLine ? "" : "offline"));
+window.addEventListener("offline", () => setNetBanner("offline"));
+
+// ---------- regs staleness stamp ----------
+// Every plan carries regs_meta (stored as-of date + server-computed
+// staleness). Offline, we RECOMPUTE staleness from the stored date + the
+// device clock, so a cached plan still raises the warning after the
+// 12-month mark even if the cached payload predates it. The banner is tied
+// to the as-of date only — refreshing the seeds clears it automatically.
+function regsMetaLocallyStale(meta) {
+  try {
+    const asOf = new Date(String(meta.regs_as_of).slice(0, 10) + "T00:00:00");
+    if (isNaN(asOf.getTime())) return false;
+    const cutoff = new Date(asOf);
+    cutoff.setFullYear(cutoff.getFullYear() + 1); // strictly >12 months
+    return new Date() > cutoff;
+  } catch (_) {
+    return false;
+  }
+}
+
+function regsStampHtml(meta) {
+  if (!meta || !meta.regs_as_of) return "";
+  const stale = Boolean(meta.regs_stale) || regsMetaLocallyStale(meta);
+  const warn = meta.regs_warning || "Regulations may be outdated — CDFW releases annual updates in July.";
+  return (
+    `<div class="regs-asof meta">Regs as of ${esc(meta.regs_as_of)}</div>` +
+    (stale ? `<div class="regs-warn">⚠️ ${esc(warn)}</div>` : "")
+  );
+}
+
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = s ?? "";
@@ -231,6 +318,8 @@ async function loadDashAlerts() {
 
 // ---------- boot ----------
 async function boot() {
+  initServiceWorker();                    // PWA: SW registration (non-fatal)
+  if (!navigator.onLine) setNetBanner("offline");
   [USERS, WATERS] = await Promise.all([api("/api/users"), api("/api/waters")]);
   fillSelect("#tf-user", USERS.map((u) => [u.id, u.name]));
   fillSelect("#pf-water", WATERS.map((w) => [w.slug, w.name]));
@@ -412,6 +501,7 @@ function renderPlanBody(body, p) {
   }
   const special = (p.regs || {}).special_regs;
   if (special) html += `<div class="plan-reg"><strong>Special:</strong> ${esc(special)}</div>`;
+  html += regsStampHtml(p.regs_meta);
   if (p.winter_targeting) {
     html += `<div class="plan-winter">❄ <strong>Winter focus:</strong> ${esc(p.winter_targeting.focus)} ` +
       `<span class="meta">— ${esc(p.winter_targeting.why)}</span></div>`;
@@ -499,6 +589,7 @@ function renderBriefing(body, b) {
     }).join("")}</div>`;
     if (plan.regs.special_regs) html += `<div class="meta">Special: ${esc(plan.regs.special_regs)}</div>`;
   }
+  html += regsStampHtml(plan.regs_meta);
   const tac = plan.tactics;
   if (tac) {
     html += `<div class="bf-tac">`;
@@ -1078,6 +1169,7 @@ function planContextHtml(p) {
     }).join("");
     html += `<div class="card">
       <h3 style="margin-top:0">Regulations ${p.regs.zone ? `— ${esc(p.regs.zone)}` : ""}</h3>
+      ${regsStampHtml(p.regs_meta)}
       <table style="width:100%;border-collapse:collapse;font-size:.9rem">
         <tr><th style="text-align:left">Species</th><th style="text-align:left">Limits</th><th style="text-align:left">Authority</th></tr>
         ${rows}

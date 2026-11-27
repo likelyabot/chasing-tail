@@ -179,6 +179,7 @@ def build_plan_block(plan: dict | None) -> dict:
     return {
         "species": species,
         "regs": plan.get("regs"),
+        "regs_meta": plan.get("regs_meta"),
         "stocking": plan.get("stocking"),
         "tactics": tactics,
         "kayak": plan.get("kayak"),

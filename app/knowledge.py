@@ -19,6 +19,18 @@ REGS_BOOKLET = (
     "(nrm.dfg.ca.gov DocID 209090, updated 2026-07-10)"
 )
 
+# Machine-readable as-of date for the REGS seeds: the CDFW 2026–2027
+# booklets' update date (see REGS_BOOKLET). Bump this (and REGS) when the
+# annual CDFW update lands — the annual refresh cron fires 2027-06-15.
+# Drives the "Regs as of <date>" stamp and the >12-month staleness banner
+# (app/services/regs_meta.py); refreshing the seeds clears the banner
+# automatically because it is tied to this date, never a hardcoded flag.
+REGS_AS_OF = "2026-07-10"
+REGS_STALE_AFTER_YEARS = 1
+REGS_STALE_WARNING = (
+    "Regulations may be outdated — CDFW releases annual updates in July."
+)
+
 # ---------------------------------------------------------------------------
 # USGS station registry.
 # Official names + coordinates verified 2026-11-23 against

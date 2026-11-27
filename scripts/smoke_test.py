@@ -58,6 +58,23 @@ Verifies the acceptance criteria:
       -> 404, coord bounds -> 422, water filter) + Leaflet-via-CDN wiring
       (assets, OSM tiles, offline "needs a connection" degradation,
       click-to-add, spot list, trip-card map jump)
+  16. shell hardening (task t_d4814b4e): PWA + regs staleness
+      - manifest: GET /manifest.webmanifest -> 200 application/manifest+json
+        with name "Chasing Tail(s)", short_name, display standalone,
+        theme/background colors, 192+512 PNG icons (served, magic bytes);
+        /static/manifest.webmanifest twin; index.html <link rel=manifest>
+        + theme-color
+      - service worker: GET /sw.js -> 200 application/javascript with
+        versioned caches (ct-shell-/ct-runtime-), activate() purge, and
+        PATTERN-based caching (all /static/*, all /api/* GETs, Leaflet CDN);
+        /static/sw.js twin; app.js registers /sw.js + offline indicator
+        (navigator.onLine + "ct:stale" SW message + #net-banner)
+      - regs staleness: GET /api/regs/meta -> 200 with the stored as-of
+        date (matches knowledge.REGS_AS_OF), not stale for the current
+        seed; recommend plans carry regs_meta; hermetic staleness logic
+        (exactly 12 months -> not stale, +1 day -> stale with the CDFW/July
+        warning, backdated fixture -> stale, refreshed seed -> clears,
+        corrupt date -> no raise)
 Exit code 0 = all pass.
 """
 import base64
@@ -1013,6 +1030,128 @@ def test_spots(base):
           "(trip-card map button missing)")
 
 
+def test_shell_hardening(BASE):
+    """16. shell hardening (task t_d4814b4e): PWA (manifest + SW) + regs staleness."""
+    # --- manifest ------------------------------------------------------------
+    st, body = req("GET", "/manifest.webmanifest")
+    man = as_dict(body)
+    check("manifest: GET /manifest.webmanifest -> 200 (parseable JSON)",
+          st == 200 and man.get("name"), f"(got {st} {body!r:.120})")
+    check("manifest: name/short_name/display=standalone/theme+background",
+          man.get("name") == "Chasing Tail(s)" and man.get("short_name")
+          and man.get("display") == "standalone"
+          and man.get("theme_color") and man.get("background_color"),
+          f"(got {man!r:.200})")
+    icons = man.get("icons") or []
+    sizes = {(i.get("sizes"), i.get("type")) for i in icons}
+    check("manifest: 192x192 + 512x512 PNG icons declared",
+          ("192x192", "image/png") in sizes and ("512x512", "image/png") in sizes,
+          f"(icons={icons!r})")
+    for ic in icons:
+        st_i, blob, ct_i = req_bin(ic.get("src", "/"))
+        check(f"manifest icon {ic.get('src')}: served as PNG (magic bytes)",
+              st_i == 200 and blob[:8] == b"\x89PNG\r\n\x1a\n" and "png" in ct_i,
+              f"(got {st_i} {ct_i} {blob[:8]!r})")
+    st, _ = req("GET", "/static/manifest.webmanifest")
+    check("manifest: /static/manifest.webmanifest also served (static mount)",
+          st == 200, f"(got {st})")
+    st, html, _ = req_bin("/")
+    check("index.html: <link rel=manifest> + theme-color wired",
+          st == 200 and b'rel="manifest"' in html and b"theme-color" in html
+          and b"net-banner" in html, f"(got {st})")
+
+    # --- service worker --------------------------------------------------------
+    st, sw, ct_sw = req_bin("/sw.js")
+    swtxt = sw.decode("utf-8", "replace")
+    check("sw.js: GET /sw.js -> 200 application/javascript",
+          st == 200 and "javascript" in ct_sw, f"(got {st} {ct_sw})")
+    check("sw.js: versioned caches (ct-shell-/ct-runtime-) + activate purge",
+          "ct-shell-" in swtxt and "ct-runtime-" in swtxt
+          and 'addEventListener("activate"' in swtxt and "caches.keys()" in swtxt,
+          f"(len={len(swtxt)})")
+    check("sw.js: PATTERN-based caching (all /static/*, all /api/* GETs, Leaflet CDN)",
+          'startsWith("/static/")' in swtxt and 'startsWith("/api/")' in swtxt
+          and "cdnjs.cloudflare.com" in swtxt and "ignoreSearch: false" in swtxt,
+          "(expected pattern guards, not a hardcoded asset list)")
+    check("sw.js: SWR for API GETs + offline fallback + stale announcement",
+          "SWR_MAX_AGE_MS" in swtxt and "offline" in swtxt.lower()
+          and '"ct:stale"' in swtxt, "")
+    st, _, _ = req_bin("/static/sw.js")
+    check("sw.js: /static/sw.js also served (static mount)", st == 200, f"(got {st})")
+    st, aj, _ = req_bin("/static/app.js")
+    ajtxt = aj.decode("utf-8", "replace")
+    check("app.js: registers /sw.js (non-fatal) + offline indicator wiring",
+          'serviceWorker.register("/sw.js")' in ajtxt and "navigator.onLine" in ajtxt
+          and 'addEventListener("offline"' in ajtxt and '"ct:stale"' in ajtxt
+          and "net-banner" in ajtxt, "")
+
+    # --- regs meta endpoint ----------------------------------------------------
+    st, rm = req("GET", "/api/regs/meta")
+    rm = as_dict(rm)
+    check("regs meta: GET /api/regs/meta -> 200 with ISO as-of date",
+          st == 200 and isinstance(rm.get("regs_as_of"), str)
+          and len(rm.get("regs_as_of", "")) == 10 and rm.get("regs_as_of", "")[4] == "-",
+          f"(got {st} {rm!r:.160})")
+    from app import knowledge
+    check("regs meta: as-of matches the knowledge.REGS_AS_OF seed",
+          rm.get("regs_as_of") == knowledge.REGS_AS_OF,
+          f"(endpoint={rm.get('regs_as_of')!r} seed={knowledge.REGS_AS_OF!r})")
+    check("regs meta: current seed is NOT stale (within 12 months)",
+          rm.get("regs_stale") is False and rm.get("regs_warning") is None
+          and isinstance(rm.get("regs_age_days"), int) and rm["regs_age_days"] >= 0
+          and rm.get("regs_stale_after"),
+          f"(got {rm!r:.200})")
+    st, plan = req("GET", "/api/recommend?water_slug=collins-lake"
+                   "&date=2026-12-15&live_weather=false")
+    pm = as_dict(plan).get("regs_meta") or {}
+    check("regs meta: recommend plan carries regs_meta (UI stamp source)",
+          st == 200 and pm.get("regs_as_of") == knowledge.REGS_AS_OF
+          and pm.get("regs_stale") is False, f"(got {pm!r:.160})")
+
+    # --- staleness logic (hermetic; backdated fixture) --------------------------
+    from app.services import regs_meta as rmeta
+    orig = knowledge.REGS_AS_OF
+    try:
+        # Seed 2026-07-10: exactly 12 months -> NOT stale (strictly-older rule).
+        s_eq = rmeta.regs_stamp(today=date(2027, 7, 10))
+        check("staleness: exactly 12 months -> not stale (strict boundary)",
+              s_eq["regs_stale"] is False and s_eq["regs_warning"] is None,
+              f"(got {s_eq!r})")
+        s_past = rmeta.regs_stamp(today=date(2027, 7, 11))
+        check("staleness: 12 months + 1 day -> stale with CDFW/July warning",
+              s_past["regs_stale"] is True and "CDFW" in (s_past["regs_warning"] or "")
+              and "July" in (s_past["regs_warning"] or "")
+              and s_past["regs_stale_after"] == "2027-07-10",
+              f"(got {s_past!r})")
+        # Backdated fixture: seed >12 months old vs a fixed "today" -> stale.
+        knowledge.REGS_AS_OF = "2025-01-15"
+        s_back = rmeta.regs_stamp(today=date(2026, 11, 26))
+        check("staleness: backdated seed 2025-01-15 -> stale (banner would show)",
+              s_back["regs_stale"] is True and s_back["regs_age_days"] > 365
+              and s_back["regs_warning"], f"(got {s_back!r})")
+        # Refreshing the seeds clears the banner (same clock, fresh date).
+        knowledge.REGS_AS_OF = "2026-11-01"
+        s_fresh = rmeta.regs_stamp(today=date(2026, 11, 26))
+        check("staleness: refreshed seed clears the banner automatically",
+              s_fresh["regs_stale"] is False and s_fresh["regs_warning"] is None,
+              f"(got {s_fresh!r})")
+        # Corrupt seed date: no raise, no false alarm, raw value surfaced.
+        knowledge.REGS_AS_OF = "not-a-date"
+        s_bad = rmeta.regs_stamp(today=date(2026, 11, 26))
+        check("staleness: corrupt as-of -> no raise, not stale, raw surfaced",
+              s_bad["regs_stale"] is False and s_bad["regs_as_of"] == "not-a-date"
+              and s_bad["regs_age_days"] is None, f"(got {s_bad!r})")
+    finally:
+        knowledge.REGS_AS_OF = orig
+    check("staleness: fixture restored (seed untouched)",
+          knowledge.REGS_AS_OF == orig, f"(got {knowledge.REGS_AS_OF!r})")
+
+    # --- UI wiring for the stamp + banner ---------------------------------------
+    check("app.js: 'Regs as of' stamp + staleness banner rendering wired",
+          "Regs as of" in ajtxt and "regs_meta" in ajtxt and "regs-warn" in ajtxt
+          and "regsMetaLocallyStale" in ajtxt, "")
+
+
 def main():
     print(f"Chasing Tail(s) smoke test -> {BASE}")
 
@@ -1589,6 +1728,9 @@ def main():
 
     # 15. productive-spot map (task t_99817b0c): spots CRUD + Leaflet wiring.
     test_spots(BASE)
+
+    # 16. shell hardening (task t_d4814b4e): PWA (manifest + SW) + regs staleness.
+    test_shell_hardening(BASE)
 
     # 10. cleanup: delete catch + trip
     st, _ = req("DELETE", f"/api/catches/{catch_id}")
