@@ -916,7 +916,7 @@ document.addEventListener("keydown", (e) => {
 // below it. The app never blocks on the map.
 // ============================================================================
 const LEAFLET_IMG_BASE = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/";
-const MAP = { map: null, water: null, adding: false, markers: [], tilesOk: 0, watchdog: null };
+const MAP = { map: null, water: null, adding: false, markers: [], waterLayer: null, waterBounds: null, tilesOk: 0, watchdog: null };
 
 function mapWater() {
   return WATERS.find((w) => w.slug === $("#mp-water").value) || null;
@@ -946,6 +946,127 @@ function setTilesNote(unavailable) {
   } else if (chip) {
     chip.remove();
   }
+}
+
+// ----------------------------------------------------------------------------
+// Water-body indicator (task t_3e3437bb): the water itself is marked — a blue
+// water-drop marker + a translucent footprint (L.circle for radius_km waters,
+// a channel-following ribbon for extent waters carrying extent.path, else a
+// chord ellipse between the endpoints) — so a water with zero spots still
+// shows WHERE the water is. All of this lives behind mapAvailable()/MAP.map
+// guards: if Leaflet/tiles are gone the text spot list below still works and
+// the indicator simply doesn't render.
+// ----------------------------------------------------------------------------
+// Lazy memoized divIcon — MUST NOT be built at top level: if the Leaflet CDN
+// script failed to load (offline), `L` is undefined and a top-level
+// L.divIcon() call would throw and kill the whole app script, destroying the
+// degraded text-list path. drawWaterIndicator() only runs when the map is up.
+let _waterDropIcon = null;
+function waterDropIcon() {
+  if (!_waterDropIcon) {
+    _waterDropIcon = L.divIcon({
+      className: "water-drop",
+      html:
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='30' height='30'>" +
+        "<path d='M12 2C12 2 5 10.6 5 15.2a7 7 0 0 0 14 0C19 10.6 12 2 12 2Z' " +
+        "fill='#2f7fd0' stroke='#ffffff' stroke-width='1.6'/></svg>",
+      iconSize: [30, 30],
+      iconAnchor: [15, 28], // bottom tip of the drop
+      tooltipAnchor: [0, -26],
+      popupAnchor: [0, -26],
+    });
+  }
+  return _waterDropIcon;
+}
+
+// Initial bearing p1→p2 in degrees clockwise from true north — feeds the
+// chord-ellipse fallback so its major axis follows the river reach.
+function bearingDeg(p1, p2) {
+  const rad = Math.PI / 180;
+  const φ1 = p1.lat * rad, φ2 = p2.lat * rad;
+  const Δλ = (p2.lng - p1.lng) * rad;
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return (Math.atan2(y, x) / rad + 360) % 360;
+}
+
+// Leaflet core ships no ellipse factory (only circle/polygon/rectangle), so
+// the river-reach footprint is synthesized: a sampled ring of an ellipse
+// whose major axis follows the a→b bearing. Pure lat/lng math — no map
+// needed, and getBounds() works on the resulting polygon.
+function ellipsePolygon(center, radiusXM, radiusYM, bearing, style, samples) {
+  const n = samples || 64;
+  const br = bearing * Math.PI / 180;
+  const eMaj = Math.sin(br), nMaj = Math.cos(br); // major axis unit vector (E, N)
+  const eMin = nMaj, nMin = -eMaj;                 // minor axis, perpendicular
+  const M_PER_DEG_LAT = 111320;
+  const mPerDegLng = M_PER_DEG_LAT * Math.cos(center.lat * Math.PI / 180);
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * 2 * Math.PI;
+    const c = Math.cos(t), s = Math.sin(t);
+    const eastM = radiusXM * c * eMaj + radiusYM * s * eMin;
+    const northM = radiusXM * c * nMaj + radiusYM * s * nMin;
+    pts.push([center.lat + northM / M_PER_DEG_LAT, center.lng + eastM / mPerDegLng]);
+  }
+  return L.polygon(pts, style);
+}
+
+// Translucent footprint layer, or null when the water carries neither
+// radius_km nor a valid extent (degrade to marker-only, never crash).
+function waterFootprint(w) {
+  const style = {
+    color: "#2f7fd0", weight: 1.5, opacity: 0.65,
+    fillColor: "#2f7fd0", fillOpacity: 0.22,
+  };
+  const ex = w.extent;
+  if (ex && Array.isArray(ex.a) && Array.isArray(ex.b) && ex.a.length === 2 && ex.b.length === 2) {
+    // Preferred: a ribbon along the ACTUAL channel — extent.path is the OSM
+    // river line between the legal endpoints, so the footprint hugs the
+    // water instead of cutting across meanders. Constant pixel width reads as
+    // a river ribbon at any zoom.
+    if (Array.isArray(ex.path) && ex.path.length >= 2 &&
+        ex.path.every((p) => Array.isArray(p) && p.length === 2 &&
+          Number.isFinite(p[0]) && Number.isFinite(p[1]))) {
+      return L.polyline(ex.path, {
+        color: "#2f7fd0", weight: 16, opacity: 0.5,
+        lineJoin: "round", lineCap: "round",
+      });
+    }
+    // Fallback: chord ellipse between the endpoints (average the endpoints
+    // for the center — accurate at reach scale).
+    const a = L.latLng(ex.a[0], ex.a[1]);
+    const b = L.latLng(ex.b[0], ex.b[1]);
+    const center = L.latLng((a.lat + b.lat) / 2, (a.lng + b.lng) / 2);
+    return ellipsePolygon(
+      center,
+      Math.max(a.distanceTo(b) / 2, 500),
+      ((Number(ex.width_km) || 1) * 1000) / 2,
+      bearingDeg(a, b),
+      style,
+    );
+  }
+  if (w.radius_km) {
+    return L.circle([w.lat, w.lon], { radius: w.radius_km * 1000, ...style });
+  }
+  return null;
+}
+
+// Feature group holding the labeled water marker + footprint. The group is
+// added to the map HERE, before bounds are read: L.Circle.getBounds() reads
+// this._map.layerPointToLatLng, so a detached layer throws
+// "Cannot read properties of undefined (reading 'layerPointToLatLng')" and
+// would kill the whole render (map block AND the text spot list below it).
+function drawWaterIndicator(w, map) {
+  const group = L.featureGroup();
+  const fp = waterFootprint(w);
+  if (fp) fp.addTo(group);
+  const mk = L.marker([w.lat, w.lon], { icon: waterDropIcon(), zIndexOffset: 500 });
+  mk.bindTooltip(w.name, { direction: "top", className: "water-tip" });
+  mk.bindPopup(`<b>${esc(w.name)}</b><br><span style="opacity:.7">${w.lat}, ${w.lon}</span>`);
+  mk.addTo(group);
+  group.addTo(map);
+  return { group, bounds: fp ? fp.getBounds() : L.latLngBounds([[w.lat, w.lon]]) };
 }
 
 function initMapIfNeeded() {
@@ -1013,6 +1134,20 @@ async function renderMapSpots() {
   if (mapAvailable() && MAP.map) {
     for (const m of MAP.markers) m.remove();
     MAP.markers = [];
+    if (MAP.waterLayer) { MAP.waterLayer.remove(); MAP.waterLayer = null; }
+    // Water-body indicator (drop marker + footprint) — always shown, even
+    // with zero spots, so the water is never just an invisible point.
+    // Guarded: a geometry hiccup degrades to "no indicator" — the spot
+    // layer and view framing below must never die with it.
+    let wi;
+    try {
+      wi = drawWaterIndicator(w, MAP.map);
+    } catch (e) {
+      console.warn("[map] water indicator failed to render:", e);
+      wi = { group: null, bounds: L.latLngBounds([[w.lat, w.lon]]) };
+    }
+    MAP.waterLayer = wi.group;
+    MAP.waterBounds = wi.bounds;
     const bounds = [];
     for (const s of spots) {
       const mk = L.marker([s.lat, s.lon]).addTo(MAP.map).bindPopup(
@@ -1022,12 +1157,18 @@ async function renderMapSpots() {
       MAP.markers.push(mk);
       bounds.push([s.lat, s.lon]);
     }
+    const all = L.latLngBounds(wi.bounds);
+    for (const b of bounds) all.extend(b);
     if (bounds.length) {
-      // maxZoom: fitBounds on a SINGLE point would zoom to the layer max
-      // (~300m view) — cap it so one spot still shows lake-scale context.
-      MAP.map.fitBounds(L.latLngBounds(bounds).pad(0.3), { maxZoom: 14 });
+      // Frame the water footprint + spots together. maxZoom: fitBounds on a
+      // SINGLE point would zoom to the layer max (~300m view) — cap it so one
+      // spot still shows lake-scale context.
+      MAP.map.fitBounds(all.pad(0.3), { maxZoom: 14 });
+    } else {
+      // No spots: frame the water footprint itself at lake scale (~15–16 for
+      // the small lakes) instead of the old blind setView(zoom 12).
+      MAP.map.fitBounds(wi.bounds.pad(0.2), { maxZoom: 16 });
     }
-    else MAP.map.setView([w.lat, w.lon], 12);
   }
   // Text list — always rendered; this IS the offline fallback surface.
   $("#mp-list").innerHTML = spots.length
@@ -1087,6 +1228,17 @@ $("#mp-add").addEventListener("click", () => {
     return;
   }
   setMapAdding(!MAP.adding);
+});
+
+$("#mp-focus").addEventListener("click", () => {
+  if (!mapAvailable() || !MAP.map) {
+    setMapNote("🗺 <b>Map needs a connection</b> — focus needs the map to load.");
+    return;
+  }
+  const w = mapWater();
+  if (!w) return;
+  const bounds = MAP.waterBounds || (MAP.waterLayer ? MAP.waterLayer.getBounds() : null);
+  if (bounds) MAP.map.flyToBounds(bounds.pad(0.2), { maxZoom: 16, duration: 0.6 });
 });
 
 $("#mp-water").addEventListener("change", () => {

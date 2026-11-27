@@ -19,16 +19,20 @@ def get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _hydrate(row: dict) -> dict:
-    """Parse the gauges JSON column into a list (defensive: bad JSON -> [])."""
-    raw = row.pop("gauges", None)
+def _parse_json_field(raw, default):
+    """Defensively parse a JSON column (bad JSON / NULL -> default)."""
     if isinstance(raw, str):
         try:
-            row["gauges"] = json.loads(raw)
+            return json.loads(raw)
         except ValueError:
-            row["gauges"] = []
-    elif raw is None:
-        row["gauges"] = []
+            return default
+    return default
+
+
+def _hydrate(row: dict) -> dict:
+    """Parse the gauges/extent JSON columns (defensive: bad JSON -> default)."""
+    row["gauges"] = _parse_json_field(row.pop("gauges", None), [])
+    row["extent"] = _parse_json_field(row.pop("extent", None), None)
     return row
 
 

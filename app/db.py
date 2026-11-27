@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS waters (
     kind       TEXT NOT NULL DEFAULT 'lake',
     usgs_site  TEXT,
     gauges     TEXT,
+    radius_km  REAL,
+    extent     TEXT,
     notes      TEXT
 );
 CREATE TABLE IF NOT EXISTS trips (
@@ -144,6 +146,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(waters)")}
     if "gauges" not in cols:
         conn.execute("ALTER TABLE waters ADD COLUMN gauges TEXT")
+    if "radius_km" not in cols:
+        conn.execute("ALTER TABLE waters ADD COLUMN radius_km REAL")
+    if "extent" not in cols:
+        conn.execute("ALTER TABLE waters ADD COLUMN extent TEXT")
 
 
 def _seed(conn: sqlite3.Connection) -> None:
@@ -160,8 +166,9 @@ def _seed(conn: sqlite3.Connection) -> None:
     for w in WATER_SEEDS:
         cur.execute(
             """INSERT INTO waters
-               (slug, name, location, lat, lon, kind, usgs_site, gauges, notes)
-               VALUES (:slug, :name, :location, :lat, :lon, :kind, :usgs_site, :gauges, :notes)
+               (slug, name, location, lat, lon, kind, usgs_site, gauges, radius_km, extent, notes)
+               VALUES (:slug, :name, :location, :lat, :lon, :kind, :usgs_site, :gauges,
+                       :radius_km, :extent, :notes)
                ON CONFLICT(slug) DO UPDATE SET
                  name = excluded.name,
                  location = excluded.location,
@@ -170,8 +177,15 @@ def _seed(conn: sqlite3.Connection) -> None:
                  kind = excluded.kind,
                  usgs_site = excluded.usgs_site,
                  gauges = excluded.gauges,
+                 radius_km = excluded.radius_km,
+                 extent = excluded.extent,
                  notes = excluded.notes""",
-            {**w, "gauges": json.dumps(WATER_GAUGES.get(w["slug"], []))},
+            {
+                **w,
+                "gauges": json.dumps(WATER_GAUGES.get(w["slug"], [])),
+                # Real SQL NULL (not the string "null") when a water has no extent.
+                "extent": json.dumps(w["extent"]) if w.get("extent") is not None else None,
+            },
         )
     # User-editable tackle: seed the single row ONLY when the table is empty.
     # Deliberately NOT an upsert — user edits must survive redeploys.

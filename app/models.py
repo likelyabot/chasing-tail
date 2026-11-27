@@ -35,6 +35,10 @@ class WaterOut(BaseModel):
     kind: str
     usgs_site: str | None
     gauges: list = []
+    # Map footprint (task t_3e3437bb): lakes carry radius_km; the river reach
+    # carries extent {"a": [lat, lon], "b": [lat, lon], "width_km": float}.
+    radius_km: float | None = None
+    extent: dict | None = None
     notes: str | None
 
 

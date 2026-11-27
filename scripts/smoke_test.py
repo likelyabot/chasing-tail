@@ -1050,6 +1050,14 @@ def test_spots(base):
     check("map: trip card jumps to the water's map view",
           'data-openmap="' in js_src and "openMapForWater" in js_src,
           "(trip-card map button missing)")
+    # Regression guards (t_3e3437bb): the river-reach footprint must be the
+    # synthesized ellipsePolygon — Leaflet core has NO ellipse factory
+    # (only circle/polygon/rectangle), and L.LatLng's to-bounds helper takes
+    # a PIXEL size, not a second LatLng (both traps broke the river render
+    # in the first pass).
+    check("map: river footprint via sampled ellipsePolygon (no L.ellipse/toBounds traps)",
+          "ellipsePolygon" in js_src and "L.ellipse" not in js_src and "toBounds(" not in js_src,
+          "(expected ellipsePolygon; forbidden: L.ellipse factory, toBounds( call)")
 
 
 def test_shell_hardening(BASE):
@@ -1465,6 +1473,45 @@ def main():
           and gauge_sites(by_slug.get("collins-lake")) == ["11413520"]
           and gauge_sites(by_slug.get("loon-lake")) == [],
           f"(got {{{gauge_summary}}}")
+
+    # ---- waters endpoint exposes map footprint (task t_3e3437bb) ----
+    # Lakes carry radius_km (positive float); the river reach carries an
+    # extent {a, b endpoints + width_km} instead. The frontend draws a
+    # translucent footprint from these — assert the fields are present and
+    # shaped so the Map tab can't silently regress to a point-only view.
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    radii = {k: _num(v.get("radius_km")) for k, v in by_slug.items()}
+    check("waters: radius_km present + positive for the three lakes",
+          st == 200
+          and all(radii.get(s) and radii[s] > 0 for s in ("collins-lake", "new-bullards-bar", "loon-lake")),
+          f"(radii={radii})")
+    sac_ext = by_slug.get("sacramento-river-westport", {}).get("extent")
+    ok_extent = (
+        isinstance(sac_ext, dict)
+        and isinstance(sac_ext.get("a"), list) and len(sac_ext["a"]) == 2
+        and isinstance(sac_ext.get("b"), list) and len(sac_ext["b"]) == 2
+        and _num(sac_ext.get("width_km")) is not None and _num(sac_ext.get("width_km")) > 0
+    )
+    check("waters: river reach exposes extent {a, b, width_km}",
+          st == 200 and ok_extent, f"(extent={sac_ext!r})")
+    # The river reach also carries extent.path — the OSM river line between
+    # the two legal endpoints (task t_3e3437bb). The frontend renders it as a
+    # ribbon that hugs the water; assert it's a sane list of [lat, lon] pairs
+    # so the Map tab can't regress to a point-only view.
+    sac_path = (sac_ext or {}).get("path") if isinstance(sac_ext, dict) else None
+    ok_path = (
+        isinstance(sac_path, list)
+        and len(sac_path) >= 10
+        and all(isinstance(p, list) and len(p) == 2
+                and all(isinstance(v, (int, float)) for v in p) for p in sac_path)
+    )
+    check("waters: river reach exposes extent.path (OSM river line, >=10 pts)",
+          st == 200 and ok_path, f"(path len={len(sac_path) if isinstance(sac_path, list) else sac_ext!r})")
 
     # 8. chat stub disabled
 

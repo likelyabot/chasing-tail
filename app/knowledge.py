@@ -121,6 +121,9 @@ WATER_SEEDS = [
         "lon": -121.505,
         "kind": "lake",
         "usgs_site": None,
+        # Map footprint (task t_3e3437bb): ~975-ac lake → ~0.7 km radius circle.
+        "radius_km": 0.7,
+        "extent": None,
         "notes": (
             "Impounded by Virginia Ranch Dam on French Dry Creek; owned/operated for "
             "irrigation by Browns Valley Irrigation District (57,000 AF, 975 ac at full); "
@@ -138,6 +141,10 @@ WATER_SEEDS = [
         "lon": -121.16,
         "kind": "lake",
         "usgs_site": "11413515",
+        # Large highway reservoir (~10 mi long, dam at the SE end) — a 1 km
+        # circle would read as a pond; 3 km covers the main central basin.
+        "radius_km": 3.0,
+        "extent": None,
         "notes": (
             "Highway-access reservoir on the North Yuba; open year-round, no seasonal "
             "closures. Emerald Cove Marina (south end): launch, fuel, tackle, rentals. "
@@ -154,6 +161,9 @@ WATER_SEEDS = [
         "lon": -120.44,
         "kind": "lake",
         "usgs_site": None,
+        # Small alpine reservoir (988 ac) → tight 0.5 km footprint.
+        "radius_km": 0.5,
+        "extent": None,
         "notes": (
             "SMUD-managed reservoir in the Crystal Basin watershed; 988 acres, elevation "
             "6,378 ft; one of three Crystal Basin lakes (with Union Valley and Ice House); "
@@ -168,17 +178,48 @@ WATER_SEEDS = [
     {
         "slug": "sacramento-river-westport",
         "name": "Sacramento River — Red Bluff→Colusa Reach",
-        "location": "Deschutes Rd Bridge → Woodson Bridge (Red Bluff to Colusa), Butte/Colusa Co., CA — Sec. 7.40(80) zone",
-        "lat": 39.23,
-        "lon": -121.85,
+        "location": "Deschutes Rd Bridge (Anderson) → Woodson Bridge (Corning), Shasta/Tehama Co., CA — Sec. 7.40(80) zone",
+        # Marker sits ON the channel at the reach midpoint (Red Bluff). The
+        # old seed (39.23, -121.85) was ~13 km EAST of the river, on farmland.
+        "lat": 40.177,
+        "lon": -122.2294,
         "kind": "river",
         "usgs_site": "11377100",
+        # River REACH, not a point: the legal fishable zone (Sec. 7.40(80)
+        # Deschutes Rd Br → Woodson Br) is ~60 km of meandering channel.
+        # extent.path is the OSM "Sacramento River" line between the two
+        # bridges (verified 2026-11-27: endpoints snap to the channel, USGS
+        # gauge 11377100 + Bend Bridge within ~1.1 km of the line). It is the
+        # same line the OSM basemap draws, so the ribbon matches the map; vs
+        # satellite it can sit on a bank (<= half channel width, ~200 m).
+        # The frontend renders it as a translucent ribbon. Without path, it
+        # falls back to a chord ellipse between a/b (~1.5 km wide channel).
+        "radius_km": None,
+        "extent": {
+            "a": [40.4374, -122.2058],  # Deschutes Rd Bridge, Anderson (NW end)
+            "b": [39.9099, -122.0930],  # Woodson Bridge, Corning (SE end)
+            "width_km": 1.5,
+            "path": [
+                [40.4374, -122.2058], [40.4107, -122.1918], [40.3761, -122.1986], [40.3482, -122.1821], [40.3427, -122.2026], [40.3288, -122.2118],
+                [40.3164, -122.1786], [40.3287, -122.1591], [40.3288, -122.1524], [40.3181, -122.155], [40.313, -122.1491], [40.3047, -122.1537],
+                [40.2965, -122.1795], [40.2804, -122.1945], [40.2687, -122.2131], [40.256, -122.226], [40.2352, -122.2118], [40.2569, -122.1973],
+                [40.2591, -122.1856], [40.2538, -122.1709], [40.2498, -122.1728], [40.2324, -122.1819], [40.2196, -122.1943], [40.2053, -122.2154],
+                [40.1912, -122.227], [40.182, -122.2354], [40.177, -122.2294], [40.1605, -122.2165], [40.1532, -122.1927], [40.1545, -122.1813],
+                [40.1463, -122.1577], [40.1407, -122.1444], [40.1156, -122.1341], [40.1047, -122.1396], [40.0999, -122.1316], [40.0891, -122.1268],
+                [40.0811, -122.1156], [40.0743, -122.1248], [40.0683, -122.1243], [40.0645, -122.1127], [40.057, -122.11], [40.045, -122.1141],
+                [40.0078, -122.1065], [39.9957, -122.1106], [39.9919, -122.109], [39.9906, -122.0953], [39.9613, -122.0905], [39.945, -122.0773],
+                [39.9393, -122.0882], [39.9275, -122.0945], [39.9183, -122.0867], [39.9099, -122.093],
+            ],
+        },
         "notes": (
             "Fishable zone per 2026 regs: Sec. 7.40(80) Deschutes Rd Br → Woodson Br "
             "(Red Bluff → Colusa) — the ONLY legal mid-December salmon harvest of the "
             "four waters (chinook, Nov 1–Dec 31). Gauges: 11377100 (primary, Red Bluff "
             "area), 11453000 + 11453120 (Yolo Bypass). Keswick→650 ft is CLOSED all "
-            "year. Source: sacramento-river-dossier.md §4–§5."
+            "year. Map coords verified 2026-11-27 against the OSM river line + "
+            "USGS 11377100 surveyed position (40.288, -122.187): Deschutes Rd Br at "
+            "Anderson (40.437, -122.206), Woodson Br at Corning (39.910, -122.093). "
+            "Source: sacramento-river-dossier.md §4–§5."
         ),
     },
 ]

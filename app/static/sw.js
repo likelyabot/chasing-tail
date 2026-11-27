@@ -36,7 +36,7 @@
  */
 "use strict";
 
-const CT_VERSION = "2";
+const CT_VERSION = "3";
 const SHELL_CACHE = `ct-shell-${CT_VERSION}`;
 const RUNTIME_CACHE = `ct-runtime-${CT_VERSION}`;
 const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
