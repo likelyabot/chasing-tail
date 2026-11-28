@@ -1513,6 +1513,33 @@ def main():
     check("waters: river reach exposes extent.path (OSM river line, >=10 pts)",
           st == 200 and ok_path, f"(path len={len(sac_path) if isinstance(sac_path, list) else sac_ext!r})")
 
+    # ---- map-fix (task t_07820315): markers land on the ACTUAL water bodies ----
+    # Collins on Virginia Ranch Reservoir (Yuba Co. — old seed sat ~25 km NW in
+    # Sierra Co.); Loon on Loon Lake (old seed sat on Union Valley Reservoir,
+    # ~13 km SW); Sacramento ribbon spans the FULL Red Bluff→Colusa named
+    # reach (old extent stopped ~75 km short of Colusa).
+    def _in_range(v, lo, hi):
+        v = _num(v)
+        return v is not None and lo <= v <= hi
+
+    c = by_slug.get("collins-lake", {})
+    check("map-fix: Collins on Virginia Ranch Reservoir (Yuba Co.)",
+          st == 200 and _in_range(c.get("lat"), 39.30, 39.40)
+          and _in_range(c.get("lon"), -121.40, -121.25),
+          f"(lat={c.get('lat')} lon={c.get('lon')})")
+    ln = by_slug.get("loon-lake", {})
+    check("map-fix: Loon on Loon Lake (NOT Union Valley Reservoir)",
+          st == 200 and _in_range(ln.get("lat"), 38.9898, 39.0098)
+          and _in_range(ln.get("lon"), -120.3162, -120.2962),
+          f"(lat={ln.get('lat')} lon={ln.get('lon')})")
+    check("map-fix: Sacramento ribbon spans Red Bluff→Colusa",
+          st == 200 and ok_extent
+          and _in_range(sac_ext["a"][0], 40.10, 40.30)
+          and _in_range(sac_ext["b"][0], 39.10, 39.30)
+          and _num(sac_ext["a"][0]) > _num(sac_ext["b"][0]),
+          f"(a={sac_ext.get('a') if isinstance(sac_ext, dict) else None} "
+          f"b={sac_ext.get('b') if isinstance(sac_ext, dict) else None})")
+
     # 8. chat stub disabled
 
     # 7. kayak gate
